@@ -1,6 +1,29 @@
 # Agent Documentation: ticketr CLI Tool
 
-This document provides detailed technical information for automated code assistants and developers working with the ticketr Rust CLI application.
+## Overview
+
+**ticketr** is a modern Rust CLI ticket management system designed for developers who want a lightweight, git-friendly ticket system that integrates seamlessly with their workflow. It's a complete rewrite of the original `tk` bash script in Rust, providing type safety, better performance, and enhanced features.
+
+### What ticketr Does
+
+- **Manages tickets as markdown files** with YAML frontmatter for human-readable storage
+- **Tracks dependencies** between tickets to manage complex workflows
+- **Supports mono-repo organization** with project and category tagging
+- **Provides CLI interface** for all ticket operations (create, update, list, etc.)
+- **Integrates with git** for version control and collaboration
+- **Offers multiple interfaces** including CLI, TUI, and web UI
+
+### Key Features
+
+- **Markdown-based tickets** - Human-readable files stored in `.tickets/` directory
+- **YAML frontmatter** - Structured metadata for easy querying and parsing
+- **Dependency tracking** - Link tickets together with dependency relationships
+- **Mono-repo support** - Tag tickets with project and category for organization
+- **Partial ID matching** - Use short prefixes to reference tickets quickly
+- **Status management** - Track ticket states (open, in_progress, closed, blocked, ready)
+- **Note system** - Add timestamped notes to tickets
+- **Multiple interfaces** - CLI, TUI (Terminal UI), and Web UI
+- **Async support** - Built on Tokio for concurrent operations
 
 ## Quick Reference
 
@@ -9,33 +32,43 @@ This document provides detailed technical information for automated code assista
 - **Test Framework**: Built-in Rust testing with assert_cmd for CLI tests
 - **Architecture**: Modular design with clear separation of concerns
 - **File Format**: Markdown files with YAML frontmatter for ticket storage
+- **Runtime**: Async with Tokio, supports TUI and Web interfaces
 
 ## Repository Structure
 
 ```
-apps/active/cli/ticketr/core/
+apps/active/cli/ticketr/
 ├── Cargo.toml              # Dependencies and project metadata
 ├── src/
 │   ├── main.rs             # Entry point and application initialization
 │   ├── cli.rs              # CLI argument parsing and command execution
 │   ├── ticket.rs           # Core ticket management logic and data structures
-│   └── utils.rs            # Utility functions for path resolution
+│   ├── utils.rs            # Utility functions for path resolution
+│   ├── tui.rs              # Terminal User Interface (TUI) implementation
+│   └── web.rs              # Web API and UI server
 ├── tests/
 │   └── cli_tests.rs        # Comprehensive CLI integration tests
+├── web/                    # Web UI assets and templates
+├── .tickets/               # Default ticket storage directory
 ├── README.md               # User-facing documentation
-└── AGENTS.md               # This file - technical reference
+├── AGENTS.md               # This file - technical reference
+├── Makefile                # Build and development commands
+├── Dockerfile              # Container configuration
+└── docker-compose.yml      # Container orchestration
 ```
 
 ## Core Technical Details
 
 ### Module System
 
-The codebase uses Rust's module system for organization:
+The codebase uses Rust's module system for organization with async support:
 
-- **main.rs**: Minimal entry point that initializes CLI and TicketManager
+- **main.rs**: Async entry point that initializes CLI and TicketManager using Tokio
 - **cli.rs**: Contains `Cli` struct with clap-derived parsing and `Commands` enum
 - **ticket.rs**: Core business logic with `TicketManager` and data structures
 - **utils.rs**: Path resolution and directory discovery utilities
+- **tui.rs**: Terminal User Interface using ratatui for interactive ticket management
+- **web.rs**: Web API server using Warp framework for HTTP interface
 
 ### Key Data Structures
 
@@ -274,17 +307,30 @@ fs::write(tickets_dir.join("test-123.md"), ticket_content).unwrap();
 ## Dependencies Architecture
 
 ### Core Dependencies
-- `clap ^4.0`: CLI argument parsing with derive macros
+- `clap ^4.4`: CLI argument parsing with derive macros and environment variable support
 - `serde ^1.0` + `serde_yaml ^0.9`: Serialization/deserialization
-- `chrono ^0.4`: Date/time handling with UTC support
+- `chrono ^0.4`: Date/time handling with UTC support and serde integration
 - `anyhow ^1.0`: Error handling with context
+- `thiserror ^1.0`: Custom error type definitions
 - `regex ^1.0`: Pattern matching for ID generation
-- `uuid ^1.0`: Unique identifier generation
+- `uuid ^1.0`: Unique identifier generation with v4 support
+- `tokio ^1.0`: Async runtime with full features
+- `warp ^0.3`: Web framework for HTTP API server
+- `ratatui ^0.24`: Terminal User Interface framework
+- `crossterm ^0.27`: Cross-platform terminal manipulation
+- `directories ^5.0`: Project directory discovery
+- `ctrlc ^3.4`: Signal handling for graceful shutdown
+- `indicatif ^0.17`: Progress bars and spinners
+- `glob ^0.3`: File pattern matching
+- `atty ^0.2`: Terminal detection
+- `serde_json ^1.0`: JSON serialization for web API
+- `shell-escape ^0.1`: Shell command escaping
+- `url ^2.0`: URL parsing and manipulation
 
 ### Development Dependencies
 - `assert_cmd ^2.0`: CLI testing framework
 - `predicates ^3.0`: Test assertion predicates
-- `tempfile ^3.0`: Temporary directory creation for tests
+- `tempfile ^3.8`: Temporary directory creation for tests
 
 ## Migration Notes
 
@@ -319,11 +365,98 @@ fs::write(tickets_dir.join("test-123.md"), ticket_content).unwrap();
 ### Debug Mode
 Set `RUST_LOG=debug` environment variable for detailed logging output.
 
+## Interface Modes
+
+### CLI Mode (Default)
+Traditional command-line interface for scripting and automation:
+```bash
+tkr create "Fix login bug"
+tkr list --project=backend
+tkr start ja-1234
+```
+
+### TUI Mode (Terminal UI)
+Interactive terminal interface using ratatui:
+```bash
+tkr tui
+```
+Features:
+- Interactive ticket browsing and editing
+- Real-time filtering and search
+- Keyboard navigation
+- Status updates with visual feedback
+
+### Web Mode
+HTTP API server with web interface:
+```bash
+tkr web --port=8080
+```
+Features:
+- RESTful API endpoints
+- Web-based ticket management
+- Real-time updates
+- Mobile-friendly interface
+
+## Container Support
+
+### Docker Configuration
+The application includes Docker support for consistent deployment:
+
+```dockerfile
+# Minimal Dockerfile for containerized deployment
+FROM rust:1.75-slim as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/tkr /usr/local/bin/
+CMD ["tkr"]
+```
+
+### Docker Compose
+```yaml
+version: '3.8'
+services:
+  ticketr:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./tickets:/app/.tickets
+    environment:
+      - TICKETS_DIR=/app/.tickets
+```
+
+## Performance Considerations
+
+- **Async Operations**: Built on Tokio for concurrent file I/O and network operations
+- **Memory Usage**: Ticket listing loads all tickets into memory (suitable for <10k tickets)
+- **File I/O**: Synchronous for simplicity, but can be made async for large datasets
+- **ID Generation**: Uses system time and UUID for uniqueness without collisions
+- **YAML Parsing**: Happens on every ticket load, cached in memory during session
+
+## Security Considerations
+
+- **No External Network Calls**: All operations are local filesystem-based
+- **File Access**: Limited to configured tickets directory and subdirectories
+- **No Privilege Escalation**: Runs with current user permissions
+- **Input Validation**: Through clap's type system and serde validation
+- **Path Traversal Protection**: Validates all file paths are within tickets directory
+
 ## Future Extensibility
 
 The modular architecture supports easy addition of:
-- New commands and subcommands
-- Additional metadata fields
-- Alternative storage backends
-- Plugin system for custom workflows
-- Integration with external ticket systems
+- **New Commands**: CLI subcommands for specialized workflows
+- **Additional Metadata**: Custom fields for domain-specific requirements
+- **Alternative Storage**: Database backends (SQLite, PostgreSQL) for team collaboration
+- **Plugin System**: Custom workflows and integrations
+- **External Integrations**: GitHub Issues, Jira, Linear, etc.
+- **Real-time Collaboration**: WebSocket-based multi-user editing
+- **Advanced Search**: Full-text search with indexing
+- **Reporting**: Analytics and burndown charts
+
+## Binary Name
+
+The compiled binary is named `tkr` (not `tk`) to avoid conflicts with the original bash script while maintaining recognizability. This allows both tools to coexist during migration.
