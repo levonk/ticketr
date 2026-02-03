@@ -138,40 +138,58 @@ impl TicketManager {
     }
 
     pub fn ticket_path(&self, id: &str) -> Result<PathBuf> {
-        let exact_path = self.tickets_dir.join(format!("{}.md", id));
+        // Search in all status directories
+        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
 
-        if exact_path.exists() {
-            return Ok(exact_path);
-        }
+        for status in &statuses {
+            let status_dir = self.get_status_dir(status);
+            let exact_path = status_dir.join(format!("{}.md", id));
 
-        // Try partial ID matching
-        if let Ok(entries) = fs::read_dir(&self.tickets_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                    if filename.starts_with(id) && filename.ends_with(".md") {
-                        return Ok(path);
+            if exact_path.exists() {
+                return Ok(exact_path);
+            }
+
+            // Try partial ID matching in this status directory
+            if let Ok(entries) = fs::read_dir(&status_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                        if filename.starts_with(id) && filename.ends_with(".md") {
+                            return Ok(path);
+                        }
                     }
                 }
             }
         }
 
-        Ok(exact_path)
+        // If not found, return the path in the open directory as default
+        let default_path = self.get_status_dir("open").join(format!("{}.md", id));
+        Ok(default_path)
     }
 
     pub fn load_ticket(&self, id: &str) -> Result<Ticket> {
         let path = self.ticket_path(id)?;
         let content = fs::read_to_string(&path)?;
 
-        // Split YAML frontmatter and content
+        // Split YAML frontmatter and content - be more robust with malformed separators
         let parts: Vec<&str> = content.splitn(3, "---").collect();
         if parts.len() < 3 {
-            anyhow::bail!("Invalid ticket format");
+            anyhow::bail!("Invalid ticket format - expected frontmatter with --- separators");
         }
 
         let yaml_content = parts[1].trim();
+
+        // Try to parse YAML, providing better error context
         let ticket: Ticket = serde_yaml::from_str(yaml_content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse YAML for ticket {}: {}", id, e))?;
+            .map_err(|e| {
+                // Show the problematic YAML content for debugging
+                anyhow::anyhow!(
+                    "Failed to parse YAML for ticket {}: {}\nYAML content:\n{}",
+                    id,
+                    e,
+                    yaml_content
+                )
+            })?;
 
         Ok(ticket)
     }
@@ -185,7 +203,7 @@ impl TicketManager {
         let yaml_content = serde_yaml::to_string(ticket)?;
 
         // Format as markdown with frontmatter
-        let mut content = format!("---\n{}---\n\n# {}\n",
+        let mut content = format!("---\n{}\n---\n\n# {}\n",
             yaml_content.trim(),
             ticket.title
         );
@@ -284,8 +302,12 @@ impl TicketManager {
                         if path.extension().map(|ext| ext == "md").unwrap_or(false) {
                             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                                 let ticket_id = filename.trim_end_matches(".md");
-                                if let Ok(ticket) = self.load_ticket(ticket_id) {
-                                    tickets.push(ticket);
+                                match self.load_ticket(ticket_id) {
+                                    Ok(ticket) => tickets.push(ticket),
+                                    Err(e) => {
+                                        // Log the error but continue processing other tickets
+                                        eprintln!("Warning: Failed to load ticket {}: {}", ticket_id, e);
+                                    }
                                 }
                             }
                         }
@@ -313,6 +335,42 @@ impl TicketManager {
             .collect();
 
         Ok(filtered_tickets)
+    }
+
+    pub fn list_ready_tickets(&self) -> Result<Vec<Ticket>> {
+        let all_tickets = self.list_tickets()?;
+        let mut ready_tickets = Vec::new();
+
+        for ticket in all_tickets {
+            // Only consider tickets that are open or in_progress
+            if ticket.status != "open" && ticket.status != "in_progress" {
+                continue;
+            }
+
+            // Check if all dependencies are resolved (not open or in_progress)
+            let mut all_deps_resolved = true;
+            for dep_id in &ticket.deps {
+                if let Ok(dep_ticket) = self.load_ticket(dep_id) {
+                    if dep_ticket.status == "open" || dep_ticket.status == "in_progress" {
+                        all_deps_resolved = false;
+                        break;
+                    }
+                } else {
+                    // If dependency ticket doesn't exist, consider it unresolved
+                    all_deps_resolved = false;
+                    break;
+                }
+            }
+
+            if all_deps_resolved {
+                ready_tickets.push(ticket);
+            }
+        }
+
+        // Sort by creation date (newest first)
+        ready_tickets.sort_by(|a, b| b.created.cmp(&a.created));
+
+        Ok(ready_tickets)
     }
 
     pub fn migrate_tickets(&self, source: &str) -> Result<()> {

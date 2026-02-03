@@ -34,7 +34,7 @@ fn find_ticket_files(tickets_dir: &PathBuf) -> Vec<PathBuf> {
 
 #[test]
 fn test_help() {
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let mut cmd = Command::cargo_bin("tkr");
     cmd.arg("--help")
         .assert()
         .success()
@@ -46,8 +46,9 @@ fn test_create_ticket() {
     let temp_dir = TempDir::new().unwrap();
     let tickets_dir = temp_dir.path().join(".tickets");
 
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Test ticket")
         .arg("--description")
@@ -79,8 +80,9 @@ fn test_create_ticket_with_project_category() {
     let temp_dir = TempDir::new().unwrap();
     let tickets_dir = temp_dir.path().join(".tickets");
 
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("--project")
         .arg("test-project")
         .arg("--category")
@@ -95,7 +97,7 @@ fn test_create_ticket_with_project_category() {
 
     assert_eq!(ticket_files.len(), 1);
 
-    let content = fs::read_to_string(ticket_files[0].path()).unwrap();
+    let content = fs::read_to_string(ticket_files[0].as_path()).unwrap();
     assert!(content.contains("project: test-project"));
     assert!(content.contains("category: test-category"));
 }
@@ -122,8 +124,9 @@ Test description
 "#;
     fs::write(tickets_dir.join("test-123.md"), ticket_content).unwrap();
 
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("list")
         .assert()
         .success()
@@ -136,8 +139,9 @@ fn test_ticket_status_update() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Status test ticket")
         .assert()
@@ -154,8 +158,9 @@ fn test_ticket_status_update() {
         .unwrap();
 
     // Update status
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("status")
         .arg(ticket_id)
         .arg("in_progress")
@@ -170,8 +175,9 @@ fn test_add_note() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Note test ticket")
         .assert()
@@ -188,8 +194,9 @@ fn test_add_note() {
         .unwrap();
 
     // Add a note
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("add-note")
         .arg(ticket_id)
         .arg("Test note content")
@@ -209,16 +216,18 @@ fn test_dependency_management() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // Create first ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Parent ticket")
         .assert()
         .success();
 
     // Create second ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Child ticket")
         .assert()
@@ -253,8 +262,9 @@ fn test_dependency_management() {
         .unwrap();
 
     // Add dependency
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("dep")
         .arg(child_id)
         .arg(parent_id)
@@ -263,8 +273,9 @@ fn test_dependency_management() {
         .stdout(predicate::str::contains("Added dependency"));
 
     // Remove dependency
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("undep")
         .arg(child_id)
         .arg(parent_id)
@@ -279,8 +290,9 @@ fn test_start_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Test ticket for start")
         .assert()
@@ -297,8 +309,9 @@ fn test_start_command() {
         .unwrap();
 
     // Start the ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("start")
         .arg(ticket_id)
         .assert()
@@ -316,8 +329,9 @@ fn test_close_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Test ticket for close")
         .assert()
@@ -334,8 +348,9 @@ fn test_close_command() {
         .unwrap();
 
     // Close the ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("close")
         .arg(ticket_id)
         .assert()
@@ -353,8 +368,9 @@ fn test_reopen_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create and close a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Test ticket for reopen")
         .assert()
@@ -371,16 +387,18 @@ fn test_reopen_command() {
         .unwrap();
 
     // Close the ticket first
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("close")
         .arg(ticket_id)
         .assert()
         .success();
 
     // Reopen the ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("reopen")
         .arg(ticket_id)
         .assert()
@@ -398,8 +416,9 @@ fn test_status_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // First create a ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Test ticket for status")
         .assert()
@@ -416,8 +435,9 @@ fn test_status_command() {
         .unwrap();
 
     // Set status to blocked
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("status")
         .arg(ticket_id)
         .arg("blocked")
@@ -436,8 +456,9 @@ fn test_show_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // Create a ticket with full details
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Show test ticket")
         .arg("--description")
@@ -456,8 +477,9 @@ fn test_show_command() {
         .unwrap();
 
     // Show the ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("show")
         .arg(ticket_id)
         .assert()
@@ -473,16 +495,18 @@ fn test_dep_tree_command() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // Create parent ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Parent ticket")
         .assert()
         .success();
 
     // Create child ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Child ticket")
         .assert()
@@ -516,8 +540,9 @@ fn test_dep_tree_command() {
         .unwrap();
 
     // Add dependency
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("dep")
         .arg(child_id)
         .arg(parent_id)
@@ -525,8 +550,9 @@ fn test_dep_tree_command() {
         .success();
 
     // Show dependency tree
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("dep-tree")
         .assert()
         .success()
@@ -539,16 +565,18 @@ fn test_link_unlink_commands() {
     let tickets_dir = temp_dir.path().join(".tickets");
 
     // Create first ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("First ticket")
         .assert()
         .success();
 
     // Create second ticket
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("create")
         .arg("Second ticket")
         .assert()
@@ -582,8 +610,9 @@ fn test_link_unlink_commands() {
         .unwrap();
 
     // Link tickets
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("link")
         .arg(first_id)
         .arg(second_id)
@@ -592,12 +621,76 @@ fn test_link_unlink_commands() {
         .stdout(predicate::str::contains("Linked"));
 
     // Unlink tickets
-    let mut cmd = Command::cargo_bin("tkr").unwrap();
-    cmd.env("TICKETS_DIR", &tickets_dir)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
         .arg("unlink")
         .arg(first_id)
         .arg(second_id)
         .assert()
         .success()
         .stdout(predicate::str::contains("Unlinked"));
+}
+
+#[test]
+fn test_ready_command() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    // Create a ticket with no dependencies (should be ready)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
+        .arg("create")
+        .arg("Ready ticket")
+        .assert()
+        .success();
+
+    // Create a ticket with dependencies (should not be ready)
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
+        .arg("create")
+        .arg("Blocked ticket")
+        .assert()
+        .success();
+
+    // Get ticket IDs
+    let ticket_files = find_ticket_files(&tickets_dir);
+    assert_eq!(ticket_files.len(), 2);
+
+    let ready_path = ticket_files[0].as_path();
+    let ready_id = ready_path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let blocked_path = ticket_files[1].as_path();
+    let blocked_id = blocked_path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    // Add dependency to make second ticket blocked
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
+        .arg("dep")
+        .arg(blocked_id)
+        .arg(ready_id)
+        .assert()
+        .success();
+
+    // Test ready command - should only show the first ticket
+    let mut cmd = Command::cargo_bin("tkr");
+    cmd.expect("REASON").env("TICKETS_DIR", .expect("REASON")
+        .env("TICKETS_DIR", &tickets_dir)tickets_dir)
+        .arg("ready")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Ready ticket"))
+        .stdout(predicate::str::contains(ready_id))
+        .stdout(predicate::str::contains("open"))
+        .stdout(predicate::str::contains("Blocked ticket").not());
 }

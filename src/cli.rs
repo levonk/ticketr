@@ -182,7 +182,14 @@ impl Commands {
                 }
             },
             Commands::Ready => {
-                eprintln!("Ready command not yet implemented");
+                let tickets = manager.list_ready_tickets()?;
+                if tickets.is_empty() {
+                    println!("No ready tickets found");
+                } else {
+                    for ticket in tickets {
+                        println!("{} - {} ({})", ticket.id, ticket.title, ticket.status);
+                    }
+                }
             },
             Commands::Blocked => {
                 eprintln!("Blocked command not yet implemented");

@@ -145,20 +145,165 @@ Ticket description goes here.
 
 ## Development Guidelines
 
+### AI Agent Workflow Loop
+
+This section describes the systematic workflow for AI agents working with ticketr to ensure consistent, high-quality development cycles.
+
+#### The AI Development Loop
+
+##### Core Philosophy
+
+The AI Development Loop is designed to:
+
+- **Maintain Context**: Always know what you're working on and why
+- **Ensure Quality**: Verify work before marking it complete
+- **Track Progress**: Clear ticket states prevent work from falling through cracks
+- **Enable Collaboration**: Proper documentation and notes help other agents understand your work
+
+##### The 7-Step Loop
+
+```bash
+# 0. Assure work is starting from clean foundation
+- Assure the typechecks, lint, build, test, and security checks pass
+- Assure the repository is clean, and everything is committed
+- Assure you're on the latest version of the repository
+- Assure you're on a working branch
+
+# 1. Grab the next ticket
+tkr ready                    # Get next actionable ticket
+# OR
+tkr list --status=open       # See all open tickets and choose one
+
+# 2. Start work on the ticket
+tkr start <ticket-id>         # Mark as in_progress
+
+# 3. Do the work
+# - Add tests as needed
+# - Implement the required changes
+# - Follow coding standards and best practices
+# - Update documentation
+
+# 4. Verify the work
+just test                     # Run tests
+just lint                     # Run linting
+just typecheck                # Run type checking
+# OR manual testing of the feature
+
+# 5. Complete the ticket
+tkr close <ticket-id>         # Mark as completed
+# OR
+tkr ready <ticket-id>         # If ready for review/merge
+
+# 6. Commit the changes
+
+# 7. Loop again - grab the next ticket
+tkr ready                    # Back to step 1
+```
+
+##### Workflow Principles
+
+**1. Atomic Operations**
+
+- Update ticket status immediately when starting work
+- Update ticket status immediately when completing work
+- Never leave tickets in ambiguous states
+
+**2. Verification First**
+
+- Always run tests before marking a ticket complete
+- Ensure all linting passes
+- Verify the implementation meets acceptance criteria
+
+**3. Documentation Updates**
+
+- Update relevant documentation as part of the work
+- Add notes to tickets explaining what was done
+- Keep README.md and AGENTS.md in sync
+
+**4. Quality Gates**
+
+- All tests must pass before completion
+- Code must follow established patterns
+- Dependencies must be properly resolved
+
+##### Ticket Status Flow
+
+```
+open → in_progress → ready → closed
+  ↑         ↓           ↓
+  └─────── ready ←─────┘
+```
+
+- **open**: Ready to start work
+- **in_progress**: Currently being worked on
+- **ready**: Work complete, ready for review
+- **closed**: Fully completed and verified
+
+##### Best Practices
+
+**Starting Work:**
+
+```bash
+# Always start with a ready ticket
+tkr ready                    # Get next available ticket
+tkr start <ticket-id>         # Begin work immediately
+
+# Add a note about what you're doing
+tkr add-note <ticket-id> "Starting implementation of feature X"
+```
+
+**Completing Work:**
+
+```bash
+# Verify everything works
+just test && just lint        # Quality gates
+
+# Add completion notes
+tkr add-note <ticket-id> "Implementation complete. Tests passing."
+
+# Mark as ready for review
+tkr ready <ticket-id>         # Or close if fully verified
+```
+
+**Handling Dependencies:**
+
+```bash
+# Check if dependencies are resolved
+tkr show <ticket-id>         # Review dependencies
+tkr ready                    # See if blocked tickets are ready
+
+# Add dependencies if needed
+tkr dep <ticket-id> <dep-id>  # Add dependency relationship
+```
+
+##### Continuous Improvement
+
+The AI agent should:
+
+1. **Reflect** on each completed cycle
+2. **Learn** from any issues encountered
+3. **Improve** the process for next iteration
+4. **Document** any new patterns or decisions
+
+This workflow ensures consistent, high-quality development while maintaining clear ticket state tracking throughout the process.
+
 ### Building and Testing
 
 ```bash
-# Build with mise (recommended)
-mise exec -- cargo build
+# Build with justfile (recommended)
+just build
 
 # Run tests
-mise exec -- cargo test
+just test
 
 # Run specific test with output
-mise exec -- cargo test test_name -- --nocapture
+just test-inner test_name -- --nocapture
+
+# Build debug version
+just debug
 
 # Build release version
-mise exec -- cargo build --release
+just build
 ```
 
 ### Adding New Commands
