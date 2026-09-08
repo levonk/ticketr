@@ -1,9 +1,10 @@
-# tkr - Rust CLI Ticket Management System
+# tkr
 
 [![Nix Flake](https://img.shields.io/badge/Nix-flake-blue.svg)](https://github.com/levonk/tkr)
 [![Devbox](https://img.shields.io/badge/Devbox-ready-green.svg)](https://github.com/levonk/tkr)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A modern Rust implementation of a ticket management system with dependency tracking and mono-repo support, ported from the original `tk` bash script.
+A modern Rust CLI ticket management system with dependency tracking and mono-repo support, ported from the original `tk` bash script. Tickets are stored as markdown files with YAML frontmatter, making them human-readable and git-friendly.
 
 ## Quick Install
 
@@ -18,166 +19,66 @@ devbox add github:levonk/tkr
 nix run github:levonk/tkr -- --help
 ```
 
-## Purpose
-
-`tkr` is a command-line tool for managing tickets stored as markdown files with YAML frontmatter. It's designed for developers who want a lightweight, git-friendly ticket system that integrates seamlessly with their workflow.
-
-### Key Features
-
-- **Markdown-based tickets** - Human-readable files stored in `.tickets/` directory
-- **YAML frontmatter** - Structured metadata for easy querying and parsing
-- **Dependency tracking** - Link tickets together with dependency relationships
-- **Mono-repo support** - Tag tickets with project and category for organization
-- **Partial ID matching** - Use short prefixes to reference tickets quickly
-- **Status management** - Track ticket states (open, in_progress, closed, blocked, ready)
-- **Note system** - Add timestamped notes to tickets
-- **CLI-driven** - Full command-line interface with comprehensive options
-
-## Architecture
-
-### Module Structure
-
-The codebase is organized into clear, focused modules:
-
-```
-src/
-├── main.rs      # Entry point and application initialization
-├── cli.rs       # CLI argument parsing and command execution
-├── ticket.rs    # Core ticket management logic and data structures
-└── utils.rs     # Utility functions for path resolution
-```
-
-### Core Components
-
-#### TicketManager (`src/ticket.rs`)
-The heart of the system responsible for:
-- Ticket creation, loading, and saving
-- ID generation with unique timestamps
-- Dependency management
-- Note handling
-- Directory management
-
-#### CLI Interface (`src/cli.rs`)
-Command-line interface built with `clap`:
-- Argument parsing and validation
-- Command routing and execution
-- Help system
-- Environment variable support
-
-#### Data Structures
-
-```rust
-pub struct Ticket {
-    pub id: String,
-    pub title: String,
-    pub status: String,
-    pub deps: Vec<String>,
-    pub links: Vec<String>,
-    pub created: DateTime<Utc>,
-    pub issue_type: String,
-    pub priority: i32,
-    pub description: Option<String>,
-    pub design: Option<String>,
-    pub acceptance: Option<String>,
-    pub assignee: Option<String>,
-    pub external_ref: Option<String>,
-    pub parent: Option<String>,
-    pub project: Option<String>,
-    pub category: Option<String>,
-    pub notes: Option<Vec<Note>>,
-}
-```
-
-## Build Process
-
-### Prerequisites
-
-- Rust 1.70+ (for modern Rust features)
-- `mise` for environment management
-- Git repository (for ticket ID generation)
-
-### Building
+## Quick Start
 
 ```bash
-# Using mise for environment management
-mise install
-mise exec -- cargo build
-
-# Or directly with cargo
-cargo build --release
-```
-
-### Testing
-
-```bash
-# Run all tests
-mise exec -- cargo test
-
-# Run specific test
-mise exec -- cargo test test_name
-
-# Run with output
-mise exec -- cargo test -- --nocapture
-```
-
-### Installation
-
-#### Option 1: Nix Installation (Recommended)
-
-Install tkr directly from the GitHub repository using Nix flakes:
-
-```bash
-# Install from the flake registry
-nix profile install github:levonk/tkr
-
-# Or build and run directly
-nix run github:levonk/tkr -- --help
-
-# For development environments
-nix develop github:levonk/tkr
-```
-
-#### Option 2: Devbox Installation
-
-Install tkr directly from the GitHub repository using devbox:
-
-```bash
-# Add tkr to your existing devbox environment
-devbox add github:levonk/tkr
-
-# Or create a new project with tkr
-mkdir my-project && cd my-project
-devbox init
-devbox add github:levonk/tkr
-devbox shell
-
-# Verify installation
-tkr --help
-```
-
-#### Option 3: Cargo Installation
-
-```bash
-# Install to local bin
-cargo install --path .
-
-# The binary will be named `tkr`
-```
-
-#### Option 4: Build from Source
-
-```bash
-# Clone the repository
+# Clone and enter project
 git clone https://github.com/levonk/tkr.git
 cd tkr
 
-# Using devbox for environment management
-devbox run just build-internal
+# direnv auto-activates devbox environment
+# If not auto-activated, run:
+direnv allow
+source .envrc
 
-# Or directly with cargo
-cargo build --release
+# Bootstrap environment
+just bootstrap
 
-# The binary will be at ./target/release/tkr
+# Build
+just build
+
+# Run tests
+just test
+```
+
+## Build and Test Commands
+
+This project uses **devbox + direnv + just** following the Standard Developer UX Flow (ADR-20260131001).
+
+```bash
+just build       # Build the project (release mode)
+just test        # Run all tests
+just lint        # Run clippy lints
+just typecheck   # Run cargo check
+just dev         # Run in development mode
+just doctor      # Check environment health
+just quality     # Run lint + test + typecheck
+just clean       # Clean build artifacts
+```
+
+**Note**: All `just` targets auto-detect the devbox environment. AI agents in automated contexts can use `devbox run just build_impl` directly.
+
+## Project Structure
+
+```
+.
+├── src/
+│   ├── main.rs        # Entry point (async, Tokio)
+│   ├── cli.rs          # CLI argument parsing (clap) and command execution
+│   ├── ticket.rs       # Core ticket management logic and data structures
+│   ├── utils.rs        # Path resolution and directory discovery
+│   ├── tui.rs          # Terminal User Interface (ratatui)
+│   └── web.rs          # Web API server (Warp)
+├── tests/
+│   └── cli_tests.rs    # CLI integration tests (assert_cmd)
+├── web/                # Web UI assets and templates
+├── .tickets/           # Default ticket storage directory
+├── justfile            # Command runner recipes
+├── devbox.json         # Devbox environment config
+├── Cargo.toml          # Rust project dependencies and metadata
+├── flake.nix           # Nix flake for reproducible builds
+├── Dockerfile          # Container configuration
+└── docker-compose.yml  # Container orchestration
 ```
 
 ## Usage
@@ -186,51 +87,51 @@ cargo build --release
 
 ```bash
 # Create a ticket
-tk create "Fix login bug" --description="Users cannot login with SSO"
+tkr create "Fix login bug" --description="Users cannot login with SSO"
 
 # List all tickets
-tk list
+tkr list
 
 # Update ticket status
-tk start ja-1234
-tk close ja-1234
+tkr start ja-1234
+tkr close ja-1234
 
 # Add dependencies
-tk dep ja-1235 ja-1234
+tkr dep ja-1235 ja-1234
 
 # Add notes
-tk add-note ja-1234 "Fixed the authentication flow"
+tkr add-note ja-1234 "Fixed the authentication flow"
 
 # Show ticket details
-tk show ja-1234
+tkr show ja-1234
 ```
 
 ### Mono-repo Features
 
 ```bash
 # Create ticket with project and category tags
-tk create "Add API endpoint" --project=backend --category=api
+tkr create "Add API endpoint" --project=backend --category=api
 
 # List tickets for specific project
-tk list --project=backend
+tkr list --project=backend
 
 # Use environment variables for defaults
 export TICKET_PROJECT=backend
 export TICKET_CATEGORY=api
-tk create "Update database schema"
+tkr create "Update database schema"
 ```
 
-### Advanced Usage
+### Interface Modes
 
 ```bash
-# Custom tickets directory
-tk --tickets-dir /path/to/custom/tickets list
+# CLI mode (default)
+tkr create "New feature"
 
-# Custom repository root
-tk --repo-root /path/to/repo create "New feature"
+# TUI mode (interactive terminal interface)
+tkr tui
 
-# Combined usage
-tk --project=frontend --category=ui --tickets-dir ./tickets create "Fix button"
+# Web mode (HTTP API server)
+tkr web --port=8080
 ```
 
 ## Configuration
@@ -239,8 +140,8 @@ tk --project=frontend --category=ui --tickets-dir ./tickets create "Fix button"
 
 - `TICKETS_DIR` - Path to tickets directory (default: `.tickets`)
 - `REPO_ROOT` - Path to repository root (for auto-discovery)
-- `TICKET_PROJECT` - Default project tag
-- `TICKET_CATEGORY` - Default category tag
+- `TICKET_PROJECT` - Default project tag for new tickets
+- `TICKET_CATEGORY` - Default category tag for new tickets
 
 ### Ticket File Format
 
@@ -256,7 +157,6 @@ links: []
 created: 2023-01-01T12:00:00Z
 type: task
 priority: 2
-description: Users cannot login with SSO
 project: backend
 category: auth
 ---
@@ -268,70 +168,63 @@ Users cannot login with SSO due to token validation issue.
 ## Notes
 
 **2023-01-01 12:30:00**: Investigating the token validation flow
-**2023-01-01 14:15:00**: Found the issue in the middleware
 ```
 
-## Development
+## AI Agent Documentation
 
-### Adding New Commands
+For AI assistants working on this project, see [AGENTS.md](AGENTS.md) for comprehensive agent-specific workflows, guidelines, and the developer guide.
 
-1. Add the command variant to `Commands` enum in `src/cli.rs`
-2. Implement the command logic in the `execute` method
-3. Add corresponding methods to `TicketManager` if needed
-4. Write tests in `tests/cli_tests.rs`
+For information about what this project does NOT do, see [internal-docs/oos/](internal-docs/oos/).
 
-### Testing Strategy
+## Installation Options
 
-- Unit tests for core functionality in `tests/cli_tests.rs`
-- Integration tests using temporary directories
-- CLI testing with `assert_cmd` crate
-- File system validation with `tempfile` crate
+### Nix (Recommended)
 
-### Code Style
+```bash
+# Install from the flake registry
+nix profile install github:levonk/tkr
 
-- Modular architecture with clear separation of concerns
-- Comprehensive error handling with `anyhow`
-- Type-safe data structures with `serde`
-- Modern Rust patterns and idioms
+# Or build and run directly
+nix run github:levonk/tkr -- --help
 
-## Migration from Original `tk`
+# For development environments
+nix develop github:levonk/tkr
+```
 
-This Rust implementation maintains compatibility with the original `tk` bash script while adding:
+### Devbox
 
-- **Type safety** - Compile-time error checking
-- **Performance** - Faster execution and lower overhead
-- **Maintainability** - Modular, testable codebase
-- **Extensibility** - Easy to add new features
-- **Cross-platform** - Works on Windows, macOS, and Linux
+```bash
+# Add tkr to your existing devbox environment
+devbox add github:levonk/tkr
 
-The file format and basic commands remain compatible, allowing seamless migration.
+# Or create a new project with tkr
+mkdir my-project && cd my-project
+devbox init
+devbox add github:levonk/tkr
+devbox shell
 
-## Dependencies
+# Verify installation
+tkr --help
+```
 
-### Core Dependencies
+### Cargo
 
-- `clap` - Command-line argument parsing
-- `serde` + `serde_yaml` - Serialization/deserialization
-- `chrono` - Date/time handling
-- `regex` - Pattern matching for ID generation
-- `uuid` - Unique identifier generation
-- `anyhow` - Error handling
+```bash
+# Install to local bin
+cargo install --path .
 
-### Development Dependencies
-
-- `assert_cmd` - CLI testing
-- `predicates` - Test assertions
-- `tempfile` - Temporary file/directory creation
-- `tokio-test` - Async testing support
+# The binary will be named tkr
+```
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
+3. Add tests for new functionality (TDD approach)
+4. Ensure all tests pass: `just test`
+5. Ensure linting passes: `just lint`
+6. Submit a pull request
 
 ## License
 
-This project is licensed under the GNU AGPL-3.0 License.
+This project is licensed under the MIT License — see `Cargo.toml` for the full license declaration.
