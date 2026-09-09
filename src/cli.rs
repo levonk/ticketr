@@ -5,6 +5,22 @@ use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 use crate::portfolio_view;
 
+/// Subcommands for `tkr daemon`.
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Start the daemon as a background process
+    Start,
+    /// Stop the running daemon
+    Stop,
+    /// Check daemon status
+    Status,
+    /// Restart the daemon
+    Restart,
+    /// Run the daemon loop (internal — spawned by `start`)
+    #[command(hide = true)]
+    Run,
+}
+
 /// Subcommands for `tkr tag`.
 #[derive(Subcommand)]
 pub enum TagSubcommand {
@@ -192,6 +208,11 @@ pub enum Commands {
     AiTask {
         #[command(subcommand)]
         command: AiTaskSubcommand,
+    },
+    /// Daemon management (file watcher + auto-sync)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
     },
 }
 
@@ -824,6 +845,15 @@ impl Commands {
                             println!("Updated {} -> {}", t.id, t.state);
                         }
                     },
+                }
+            },
+            Commands::Daemon { action } => {
+                match action {
+                    DaemonAction::Start => crate::daemon::start_daemon()?,
+                    DaemonAction::Stop => crate::daemon::stop_daemon()?,
+                    DaemonAction::Status => crate::daemon::status_daemon()?,
+                    DaemonAction::Restart => crate::daemon::restart_daemon()?,
+                    DaemonAction::Run => crate::daemon::run_daemon()?,
                 }
             },
         }
