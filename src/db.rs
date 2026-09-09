@@ -35,6 +35,24 @@ pub enum PortfolioSubcommand {
     Show { id: String },
     /// Dissolve a portfolio (soft delete)
     Dissolve { id: String },
+    /// Display cross-project views of tasks
+    View {
+        /// Group tasks by their story's requirement
+        #[arg(long = "by-requirement")]
+        by_requirement: bool,
+        /// Group tasks by story
+        #[arg(long = "by-story")]
+        by_story: bool,
+        /// Group tasks by tag (optionally filtered to a specific tag value)
+        #[arg(long = "by-tag")]
+        by_tag: Option<Option<String>>,
+        /// Group tasks by project
+        #[arg(long = "by-project")]
+        by_project: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 }
 
 /// A project record — a git repo registered under a portfolio. Projects are

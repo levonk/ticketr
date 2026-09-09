@@ -1,5 +1,6 @@
 mod cli;
 mod db;
+mod portfolio_view;
 mod sync;
 mod ticket;
 mod utils;
