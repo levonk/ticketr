@@ -54,6 +54,55 @@ pub struct Project {
     pub last_synced_at: Option<String>,
 }
 
+/// An app record — a deployable unit within a project. Apps are the third
+/// level of the 7-level hierarchy. Single-app projects get an implicit
+/// `default` app.
+#[derive(Debug, Serialize)]
+pub struct App {
+    pub id: i64,
+    pub project_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub state: String,
+    pub created: String,
+}
+
+/// Subcommands for `tkr app`.
+#[derive(Subcommand)]
+pub enum AppSubcommand {
+    /// Create a new app under a project
+    Create {
+        name: String,
+        #[arg(short = 'p', long = "project")]
+        project: i64,
+        #[arg(short = 'd', long = "description")]
+        description: Option<String>,
+        #[arg(short = 's', long = "state", default_value = "drafted")]
+        state: String,
+    },
+    /// List apps, optionally filtered by project
+    List {
+        #[arg(short = 'p', long = "project")]
+        project: Option<i64>,
+    },
+    /// Transition an app to the sunset terminal state
+    Sunset { id: i64 },
+}
+
+/// Valid app state values per the PRD deployment vocabulary.
+const VALID_APP_STATES: &[&str] = &["sketched", "drafted", "deployed", "deprecated", "sunset"];
+
+/// Validate that `state` is one of the allowed app state values.
+fn validate_app_state(state: &str) -> Result<()> {
+    if !VALID_APP_STATES.contains(&state) {
+        anyhow::bail!(
+            "Invalid state: {}. Valid states: sketched, drafted, deployed, deprecated, sunset",
+            state
+        );
+    }
+    Ok(())
+}
+
 /// Subcommands for `tkr project`.
 #[derive(Subcommand)]
 pub enum ProjectSubcommand {
@@ -315,9 +364,18 @@ impl PortfolioDb {
         Ok(projects)
     }
 
-    /// Remove a project from the DB by its repo path (hard delete). Returns an
-    /// error if no project with that repo path exists.
+    /// Remove a project from the DB by its repo path (hard delete). Also
+    /// removes any apps associated with the project to satisfy foreign key
+    /// constraints. Returns an error if no project with that repo path exists.
     pub fn unregister_project(&self, repo_path: &str) -> Result<()> {
+        // Delete apps for the project first to satisfy FK constraints
+        self.conn.execute(
+            "DELETE FROM apps WHERE project_id IN (
+                SELECT id FROM projects WHERE repo_path = ?1
+            )",
+            rusqlite::params![repo_path],
+        )?;
+
         let affected = self.conn.execute(
             "DELETE FROM projects WHERE repo_path = ?1",
             rusqlite::params![repo_path],
@@ -337,6 +395,128 @@ impl PortfolioDb {
             |row| row.get(0),
         )?;
         Ok(exists)
+    }
+
+    /// Create a new app under a project. Validates the state against the
+    /// PRD vocabulary, checks that the project exists, and enforces the
+    /// `UNIQUE(project_id, name)` constraint at the application layer.
+    /// Returns the auto-generated app ID.
+    pub fn create_app(
+        &self,
+        project_id: i64,
+        name: &str,
+        description: Option<&str>,
+        state: &str,
+    ) -> Result<i64> {
+        validate_app_state(state)?;
+
+        let project_exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM projects WHERE id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )?;
+        if !project_exists {
+            anyhow::bail!("Project not found: {}", project_id);
+        }
+
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM apps WHERE project_id = ?1 AND name = ?2",
+            rusqlite::params![project_id, name],
+            |row| row.get(0),
+        )?;
+        if exists {
+            anyhow::bail!("App \"{}\" already exists for project {}", name, project_id);
+        }
+
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO apps (project_id, name, description, state, created)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![project_id, name, description, state, created],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List apps, optionally filtered by project. Ordered by app ID.
+    pub fn list_apps(&self, project_id: Option<i64>) -> Result<Vec<App>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, name, description, state, created
+             FROM apps
+             WHERE (?1 IS NULL OR project_id = ?1)
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![project_id], |row| {
+            Ok(App {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                state: row.get(4)?,
+                created: row.get(5)?,
+            })
+        })?;
+        let mut apps = Vec::new();
+        for row in rows {
+            apps.push(row?);
+        }
+        Ok(apps)
+    }
+
+    /// Transition an app to the `sunset` terminal state. Returns an error
+    /// if the app does not exist.
+    pub fn sunset_app(&self, id: i64) -> Result<App> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM apps WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("App not found: {}", id);
+        }
+
+        self.conn.execute(
+            "UPDATE apps SET state = 'sunset' WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+
+        self.conn.query_row(
+            "SELECT id, project_id, name, description, state, created
+             FROM apps WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                Ok(App {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    state: row.get(4)?,
+                    created: row.get(5)?,
+                })
+            },
+        ).map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Ensure that a `default` app exists for the given project. If no apps
+    /// exist for the project, creates one with name `default`, state `drafted`,
+    /// and description `Default app`. Returns `Some(app_id)` if a new app was
+    /// created, or `None` if apps already exist for the project.
+    pub fn ensure_default_app(&self, project_id: i64) -> Result<Option<i64>> {
+        let has_app: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM apps WHERE project_id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )?;
+        if has_app {
+            return Ok(None);
+        }
+
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO apps (project_id, name, description, state, created)
+             VALUES (?1, 'default', 'Default app', 'drafted', ?2)",
+            rusqlite::params![project_id, created],
+        )?;
+        Ok(Some(self.conn.last_insert_rowid()))
     }
 }
 

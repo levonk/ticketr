@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand};
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 
@@ -135,6 +135,11 @@ pub enum Commands {
     Project {
         #[command(subcommand)]
         command: ProjectSubcommand,
+    },
+    /// App management
+    App {
+        #[command(subcommand)]
+        command: AppSubcommand,
     },
 }
 
@@ -372,6 +377,12 @@ impl Commands {
                             github_repo.as_deref(),
                         )?;
 
+                        // Auto-create a default app for the new project
+                        let default_app_id = db.ensure_default_app(id)?;
+                        if let Some(app_id) = default_app_id {
+                            println!("Created default app (id: {}) for project {}", app_id, id);
+                        }
+
                         let github_display = match (&github_owner, &github_repo) {
                             (Some(o), Some(r)) => format!("{}/{}", o, r),
                             _ => "(none)".to_string(),
@@ -415,6 +426,44 @@ impl Commands {
                         };
                         db.unregister_project(&repo_path_str)?;
                         println!("Unregistered project: {}", repo_path_str);
+                    },
+                }
+            },
+            Commands::App { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    AppSubcommand::Create { name, project, description, state } => {
+                        let id = db.create_app(
+                            project,
+                            &name,
+                            description.as_deref(),
+                            &state,
+                        )?;
+                        println!("Created app \"{}\" (id: {}) for project {}", name, id, project);
+                    },
+                    AppSubcommand::List { project } => {
+                        let apps = db.list_apps(project)?;
+                        if apps.is_empty() {
+                            println!("No apps found");
+                        } else {
+                            println!(
+                                "{:<4} {:<12} {:<10} {:<10} Description",
+                                "ID", "Name", "State", "Project"
+                            );
+                            for a in apps {
+                                let desc = a.description.unwrap_or_else(|| "(none)".to_string());
+                                println!(
+                                    "{:<4} {:<12} {:<10} {:<10} {}",
+                                    a.id, a.name, a.state, a.project_id, desc
+                                );
+                            }
+                        }
+                    },
+                    AppSubcommand::Sunset { id } => {
+                        let app = db.sunset_app(id)?;
+                        println!("App {} (\"{}\") transitioned to sunset", app.id, app.name);
                     },
                 }
             },
