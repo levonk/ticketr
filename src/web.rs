@@ -1,9 +1,11 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use warp::{Filter, Reply};
+use crate::api;
+use crate::db::PortfolioDb;
 use crate::ticket::{TicketManager, Ticket};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,13 +43,19 @@ pub async fn start_web_server(
     let tickets = Arc::new(RwLock::new(manager.list_tickets()?));
     let manager = Arc::new(RwLock::new(manager.clone()));
 
+    // Open the portfolio SQLite database for the API endpoints
+    let db_path = PortfolioDb::db_path()?;
+    let portfolio_db = PortfolioDb::open(&db_path)?;
+    portfolio_db.migrate()?;
+    let db_state: api::DbState = Arc::new(Mutex::new(portfolio_db));
+
     // CORS headers
     let cors = warp::cors()
         .allow_any_origin()
         .allow_headers(vec!["content-type"])
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"]);
 
-    // API routes
+    // API routes — existing ticket endpoints (backward compatibility)
     let api_tickets = warp::path("api")
         .and(warp::path("tickets"))
         .and(warp::get())
@@ -62,12 +70,16 @@ pub async fn start_web_server(
         .and(with_manager(manager.clone()))
         .and_then(update_ticket);
 
+    // Portfolio API routes
+    let portfolio_api = api::all_api_routes(db_state);
+
     // Serve static files
     let static_files = warp::get()
         .and(warp::fs::dir("web"))
         .or(warp::get().and(warp::path("index.html")).and(warp::fs::file("web/index.html")));
 
     let routes = static_files
+        .or(portfolio_api)
         .or(api_tickets)
         .or(api_ticket_update)
         .with(cors)
