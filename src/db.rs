@@ -202,6 +202,30 @@ pub enum StorySubcommand {
     Unlink { task_id: String },
 }
 
+/// Subcommands for `tkr priority`.
+#[derive(Subcommand)]
+pub enum PrioritySubcommand {
+    /// Set a task's position in a scope (shifts other tasks to maintain
+    /// gap-free ordering)
+    Set {
+        /// Scope type: global, portfolio, project, app, requirement, story, tag
+        scope_type: String,
+        /// Scope ID (e.g. story-abc123, or "global" for the global scope)
+        scope_id: String,
+        /// The task ID to reorder
+        task_id: String,
+        /// The new 0-based position
+        position: i64,
+    },
+    /// List tasks in priority order for a scope
+    List {
+        /// Scope type: global, portfolio, project, app, requirement, story, tag
+        scope_type: String,
+        /// Scope ID (e.g. story-abc123, or "global" for the global scope)
+        scope_id: String,
+    },
+}
+
 /// Valid requirement state values per the PRD requirement vocabulary.
 const VALID_REQUIREMENT_STATES: &[&str] =
     &["surfaced", "proposed", "planned", "current", "superseded"];
