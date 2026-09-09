@@ -1,10 +1,11 @@
 ---
 feature: "Portfolio Layer"
 slug: "portfolio-layer"
-status: "Planning"
+status: "Completed"
 date:
   created: "2026-09-08"
-  last-activity: "2026-09-08"
+  last-activity: "2026-09-09"
+  completed: "2026-09-09"
 priority: "P1"
 tags:
   - architecture
@@ -518,33 +519,45 @@ reqwest = { version = "0.12", features = ["json"] }
 
 ## Acceptance Criteria
 
-- [ ] `tkr portfolio create/list/show/dissolve` commands work
-- [ ] `tkr project register/list/unregister` commands work, projects link to portfolios
-- [ ] `tkr app create/list/sunset` commands work, "default" app auto-created for single-app projects
-- [ ] `tkr requirement create/list/show/supersede` commands work
-- [ ] `tkr story create/list/show/ship` commands work
-- [ ] Tasks can be linked to stories via markdown `story` frontmatter field
-- [ ] `tkr tag add/remove/list` commands work, tags sync to markdown
-- [ ] `tkr sync` syncs markdown tasks into the SQLite portfolio DB
-- [ ] `tkr portfolio view` shows cross-project views (by-requirement, by-story, by-tag, by-project)
-- [ ] `tkr daemon start/stop/status/restart` manages the background daemon
-- [ ] Daemon watches `.tickets/` directories and syncs changes to SQLite
-- [ ] Web UI serves a Kanban board with columns by task state (logged, open, in_progress, blocked, ready, closed)
-- [ ] Kanban board supports filtering by portfolio, project, app, story, requirement, tag, state, assignee
-- [ ] Filters compose (e.g. portfolio=personal + project=tkr + tag=security + state=open)
-- [ ] Count annotations (superscript badges) on column headers, filter options, total, portfolios, projects, apps, stories, requirements, tags
-- [ ] Counts are scoped to active filters
-- [ ] Empty-state indicators (count ⁰ greyed out but visible)
-- [ ] Drag-and-drop within a column updates `priority_order` for the active filter scope
-- [ ] Drag-and-drop between columns updates task state (writes to markdown via daemon)
-- [ ] Cross-altitude rule enforced: drag-reorder disabled when no single story filter is active
-- [ ] Card detail panel allows editing title, description, tags, story, dependencies
-- [ ] `tkr sync --github` syncs tasks bidirectionally with GitHub Issues
-- [ ] GitHub sync works across multiple accounts (lrepo52, levonk)
-- [ ] All 7 levels use their unique state vocabulary (36 unique state names, no overlap)
-- [ ] All new commands have tests
-- [ ] `just test` passes
-- [ ] `just lint` passes
+- [x] `tkr portfolio create/list/show/dissolve` commands work
+- [x] `tkr project register/list/unregister` commands work, projects link to portfolios
+- [x] `tkr app create/list/sunset` commands work, "default" app auto-created for single-app projects
+- [x] `tkr requirement create/list/show/supersede` commands work
+- [x] `tkr story create/list/show/ship` commands work
+- [x] Tasks can be linked to stories via markdown `story` frontmatter field
+- [x] `tkr tag add/remove/list` commands work, tags sync to markdown
+- [x] `tkr sync` syncs markdown tasks into the SQLite portfolio DB
+- [x] `tkr portfolio view` shows cross-project views (by-requirement, by-story, by-tag, by-project)
+- [x] `tkr daemon start/stop/status/restart` manages the background daemon
+- [x] Daemon watches `.tickets/` directories and syncs changes to SQLite
+- [x] Web UI serves a Kanban board with columns by task state (logged, open, in_progress, blocked, ready, closed)
+- [x] Kanban board supports filtering by portfolio, project, app, story, requirement, tag, state, assignee
+- [x] Filters compose (e.g. portfolio=personal + project=tkr + tag=security + state=open)
+- [x] Count annotations (superscript badges) on column headers, filter options, total, portfolios, projects, apps, stories, requirements, tags
+- [x] Counts are scoped to active filters
+- [x] Empty-state indicators (count ⁰ greyed out but visible)
+- [x] Drag-and-drop within a column updates `priority_order` for the active filter scope
+- [x] Drag-and-drop between columns updates task state (writes to markdown via daemon)
+- [x] Cross-altitude rule enforced: drag-reorder disabled when no single story filter is active
+- [x] Card detail panel allows editing title, description, tags, story, dependencies
+- [x] `tkr sync --github` syncs tasks bidirectionally with GitHub Issues
+- [x] GitHub sync works across multiple accounts (lrepo52, levonk)
+- [x] All 7 levels use their unique state vocabulary (36 unique state names, no overlap)
+- [x] All new commands have tests
+- [~] `just test` passes (cargo test passes; 3 pre-existing failures unrelated to this feature)
+- [~] `just lint` passes (cargo clippy passes; devbox init_hook broken — see Deviations)
+
+## Deviations from Original Plan
+
+1. **devbox init_hook broken** — The `devbox.json` `init_hook` references `just bootstrap-internal` but the justfile defines `bootstrap_impl` (with underscore, not hyphen). This blocks all `devbox run -- just <cmd>` invocations. Workaround: use `cargo` directly (`cargo build`, `cargo test`, `cargo clippy`). This is a pre-existing issue unrelated to this feature.
+
+2. **3 pre-existing test failures** — `test_dep_tree_command`, `test_dependency_management`, `test_link_unlink_commands` fail on `main` before any portfolio layer changes. These are out of scope and were not fixed.
+
+3. **Pre-existing clippy warnings fixed** — 4 clippy warnings in `src/ticket.rs`, `src/web.rs`, and `src/tui.rs` were fixed to allow `cargo clippy -- -D warnings` to pass cleanly. These were trivial one-line fixes (needless borrow, push_str vs push, match_result_ok, let_underscore_future).
+
+4. **GitHub sync uses `gh` CLI for auth** — Per the no-corner architecture, GitHub sync shells out to `gh auth token` for authentication rather than storing tokens. Tests use a mock client to avoid real API calls.
+
+5. **Priority ordering** — The `priority_order` table was created in story 01-001's schema. Story 06-003 added the `PriorityManager` with atomic reordering, compaction, and auto-assignment. The API endpoints from story 05-002 were refactored to delegate to `PriorityManager`.
 
 ## References
 
