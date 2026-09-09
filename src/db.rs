@@ -37,6 +37,43 @@ pub enum PortfolioSubcommand {
     Dissolve { id: String },
 }
 
+/// A project record — a git repo registered under a portfolio. Projects are
+/// the second level of the 7-level hierarchy.
+#[derive(Debug, Serialize)]
+pub struct Project {
+    pub id: i64,
+    pub portfolio_id: String,
+    pub name: String,
+    pub repo_path: String,
+    pub github_owner: Option<String>,
+    pub github_repo: Option<String>,
+    pub github_account: Option<String>,
+    pub tickets_dir: String,
+    pub state: String,
+    pub registered_at: String,
+    pub last_synced_at: Option<String>,
+}
+
+/// Subcommands for `tkr project`.
+#[derive(Subcommand)]
+pub enum ProjectSubcommand {
+    /// Register a repo under a portfolio
+    Register {
+        path: String,
+        #[arg(short = 'p', long = "portfolio")]
+        portfolio: String,
+        #[arg(short = 'n', long = "name")]
+        name: Option<String>,
+    },
+    /// List registered projects, optionally filtered by portfolio
+    List {
+        #[arg(short = 'p', long = "portfolio")]
+        portfolio: Option<String>,
+    },
+    /// Remove a project from the DB (hard delete)
+    Unregister { path: String },
+}
+
 /// Wrapper around a SQLite connection holding the portfolio database.
 pub struct PortfolioDb {
     /// Public so tests and future modules can run ad-hoc queries.
@@ -220,6 +257,104 @@ impl PortfolioDb {
         )?;
         Ok(())
     }
+
+    /// Register a project under a portfolio. Inserts a row with state `seeded`
+    /// and the current UTC timestamp, returning the auto-generated project ID.
+    /// Returns an error if a project with the same `repo_path` already exists.
+    pub fn register_project(
+        &self,
+        portfolio_id: &str,
+        name: &str,
+        repo_path: &str,
+        tickets_dir: &str,
+        github_owner: Option<&str>,
+        github_repo: Option<&str>,
+    ) -> Result<i64> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM projects WHERE repo_path = ?1",
+            rusqlite::params![repo_path],
+            |row| row.get(0),
+        )?;
+        if exists {
+            anyhow::bail!("Project already registered: {}", repo_path);
+        }
+
+        let registered_at = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO projects
+                (portfolio_id, name, repo_path, github_owner, github_repo, tickets_dir, state, registered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'seeded', ?7)",
+            rusqlite::params![
+                portfolio_id,
+                name,
+                repo_path,
+                github_owner,
+                github_repo,
+                tickets_dir,
+                registered_at,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List registered projects. When `portfolio_id` is `Some`, only projects
+    /// in that portfolio are returned. Ordered by registration time.
+    pub fn list_projects(&self, portfolio_id: Option<&str>) -> Result<Vec<Project>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, portfolio_id, name, repo_path, github_owner, github_repo,
+                    github_account, tickets_dir, state, registered_at, last_synced_at
+             FROM projects
+             WHERE (?1 IS NULL OR portfolio_id = ?1)
+             ORDER BY registered_at",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![portfolio_id], map_project_row)?;
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row?);
+        }
+        Ok(projects)
+    }
+
+    /// Remove a project from the DB by its repo path (hard delete). Returns an
+    /// error if no project with that repo path exists.
+    pub fn unregister_project(&self, repo_path: &str) -> Result<()> {
+        let affected = self.conn.execute(
+            "DELETE FROM projects WHERE repo_path = ?1",
+            rusqlite::params![repo_path],
+        )?;
+        if affected == 0 {
+            anyhow::bail!("Project not found: {}", repo_path);
+        }
+        Ok(())
+    }
+
+    /// Return true if a project with the given repo path is registered.
+    #[allow(dead_code)]
+    pub fn project_exists(&self, repo_path: &str) -> Result<bool> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM projects WHERE repo_path = ?1",
+            rusqlite::params![repo_path],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+}
+
+/// Map a rusqlite row into a [`Project`] struct.
+fn map_project_row(row: &rusqlite::Row) -> rusqlite::Result<Project> {
+    Ok(Project {
+        id: row.get(0)?,
+        portfolio_id: row.get(1)?,
+        name: row.get(2)?,
+        repo_path: row.get(3)?,
+        github_owner: row.get(4)?,
+        github_repo: row.get(5)?,
+        github_account: row.get(6)?,
+        tickets_dir: row.get(7)?,
+        state: row.get(8)?,
+        registered_at: row.get(9)?,
+        last_synced_at: row.get(10)?,
+    })
 }
 
 /// Full DDL for the portfolio schema (all 11 tables). Uses `IF NOT EXISTS` so
