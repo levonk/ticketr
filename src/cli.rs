@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand};
 use crate::ticket::{TicketManager, CreateOptions};
+use crate::utils::detect_github_info;
 
 #[derive(Parser)]
 #[command(name = "tkr")]
@@ -129,6 +130,11 @@ pub enum Commands {
     Portfolio {
         #[command(subcommand)]
         command: PortfolioSubcommand,
+    },
+    /// Project management
+    Project {
+        #[command(subcommand)]
+        command: ProjectSubcommand,
     },
 }
 
@@ -308,6 +314,107 @@ impl Commands {
                         db.dissolve_portfolio(&id)?;
                         let p = db.get_portfolio(&id)?;
                         println!("Dissolved portfolio: {} ({})", p.id, p.name);
+                    },
+                }
+            },
+            Commands::Project { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    ProjectSubcommand::Register { path, portfolio, name } => {
+                        // Validate the repo path exists
+                        let repo_path = std::path::Path::new(&path);
+                        if !repo_path.exists() {
+                            anyhow::bail!(
+                                "Path does not exist: {}",
+                                repo_path.display()
+                            );
+                        }
+
+                        // Validate the portfolio exists
+                        db.get_portfolio(&portfolio)
+                            .map_err(|_| anyhow::anyhow!("Portfolio not found: {}", portfolio))?;
+
+                        // Canonicalize the repo path to an absolute path
+                        let repo_path = repo_path.canonicalize()?;
+                        let repo_path_str = repo_path.to_string_lossy().to_string();
+
+                        // Auto-detect the project name from the directory name
+                        let project_name = name.unwrap_or_else(|| {
+                            repo_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "unnamed".to_string())
+                        });
+
+                        // Auto-detect the .tickets directory
+                        let tickets_dir = if repo_path.join(".tickets").exists() {
+                            repo_path.join(".tickets")
+                        } else {
+                            // Default to <repo>/.tickets even if it doesn't exist yet
+                            repo_path.join(".tickets")
+                        };
+                        let tickets_dir_str = tickets_dir.to_string_lossy().to_string();
+
+                        // Auto-detect GitHub owner/repo from git remote
+                        let (github_owner, github_repo) = match detect_github_info(&repo_path)? {
+                            Some((owner, repo)) => (Some(owner), Some(repo)),
+                            None => (None, None),
+                        };
+
+                        let id = db.register_project(
+                            &portfolio,
+                            &project_name,
+                            &repo_path_str,
+                            &tickets_dir_str,
+                            github_owner.as_deref(),
+                            github_repo.as_deref(),
+                        )?;
+
+                        let github_display = match (&github_owner, &github_repo) {
+                            (Some(o), Some(r)) => format!("{}/{}", o, r),
+                            _ => "(none)".to_string(),
+                        };
+
+                        println!("Registered project: {}", project_name);
+                        println!("  Portfolio: {}", portfolio);
+                        println!("  Repo: {}", repo_path_str);
+                        println!("  GitHub: {}", github_display);
+                        println!("  Tickets: {}", tickets_dir_str);
+                        println!("  State: seeded");
+                        println!("  ID: {}", id);
+                    },
+                    ProjectSubcommand::List { portfolio } => {
+                        let projects = db.list_projects(portfolio.as_deref())?;
+                        if projects.is_empty() {
+                            println!("No projects found");
+                        } else {
+                            println!(
+                                "{:<4} {:<16} {:<12} {:<34} {:<18} {:<8}",
+                                "ID", "Name", "Portfolio", "Repo", "GitHub", "State"
+                            );
+                            for p in projects {
+                                let github = match (&p.github_owner, &p.github_repo) {
+                                    (Some(o), Some(r)) => format!("{}/{}", o, r),
+                                    _ => "(none)".to_string(),
+                                };
+                                println!(
+                                    "{:<4} {:<16} {:<12} {:<34} {:<18} {:<8}",
+                                    p.id, p.name, p.portfolio_id, p.repo_path, github, p.state
+                                );
+                            }
+                        }
+                    },
+                    ProjectSubcommand::Unregister { path } => {
+                        let repo_path = std::path::Path::new(&path);
+                        let repo_path_str = if repo_path.exists() {
+                            repo_path.canonicalize()?.to_string_lossy().to_string()
+                        } else {
+                            path.clone()
+                        };
+                        db.unregister_project(&repo_path_str)?;
+                        println!("Unregistered project: {}", repo_path_str);
                     },
                 }
             },
