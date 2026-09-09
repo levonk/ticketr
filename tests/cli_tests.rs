@@ -4571,3 +4571,301 @@ fn test_daemon_file_delete_removes_row() {
     }
     assert!(removed, "Row should be removed from SQLite after file deletion");
 }
+
+// ---------------------------------------------------------------------------
+// Priority ordering integration tests (story 06-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: seed a portfolio DB with a full hierarchy and tasks for priority
+/// tests. Creates portfolio -> project -> app -> requirement -> story -> tasks.
+fn seed_priority_db(db_path: &std::path::Path) -> String {
+    // Create portfolio
+    create_portfolio(db_path, "personal", "Personal");
+
+    // Register a project (needs a real repo path)
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path().to_str().unwrap().to_string();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio=personal")
+        .assert()
+        .success();
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let req_stdout = String::from_utf8(output).unwrap();
+    let req_id = req_stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string();
+
+    // Create a story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg("--requirement")
+        .arg(&req_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let story_stdout = String::from_utf8(output).unwrap();
+    let story_id = story_stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string();
+
+    // Insert tasks directly into the DB (bypassing markdown/sync for simplicity)
+    let db = tkr_test_db::open_db(db_path);
+    let project_id: i64 = db
+        .query_row(
+            "SELECT id FROM projects WHERE name = 'test-repo'",
+            [],
+            |row| row.get(0),
+        )
+        .or_else(|_| {
+            db.query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))
+        })
+        .unwrap();
+    let app_id: i64 = db
+        .query_row(
+            "SELECT id FROM apps WHERE project_id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio1', ?1, ?2, ?3, 'Task One', 'open', 2, '/m1', '2026-01-01')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio2', ?1, ?2, ?3, 'Task Two', 'in_progress', 3, '/m2', '2026-01-02')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio3', ?1, ?2, ?3, 'Task Three', 'open', 1, '/m3', '2026-01-03')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+
+    // Keep the repo_temp alive by leaking it (tests are short-lived)
+    std::mem::forget(repo_temp);
+
+    story_id
+}
+
+#[test]
+fn test_cli_priority_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio2")
+        .arg("0")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Moved"))
+        .stdout(predicate::str::contains("ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Set a specific ordering first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success();
+
+    // List the ordering
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("list")
+        .arg("story")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Priority ordering"))
+        .stdout(predicate::str::contains("ja-prio3"))
+        .stdout(predicate::str::contains("ja-prio1"))
+        .stdout(predicate::str::contains("ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_set_global() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("global")
+        .arg("global")
+        .arg("ja-prio1")
+        .arg("0")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Moved"));
+}
+
+#[test]
+fn test_cli_priority_invalid_scope_type() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("invalid_scope")
+        .arg("scope1")
+        .arg("ja-prio1")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid scope type"));
+}
+
+#[test]
+fn test_cli_priority_set_shifts_others() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Initial: auto-assign gives ja-prio1(0), ja-prio2(1), ja-prio3(2)
+    // Move ja-prio3 to position 0
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    // ja-prio3 should be at position 0
+    assert!(stdout.contains("0: ja-prio3"));
+    // ja-prio1 should be at position 1 (shifted down)
+    assert!(stdout.contains("1: ja-prio1"));
+    // ja-prio2 should be at position 2 (shifted down)
+    assert!(stdout.contains("2: ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_list_empty_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("list")
+        .arg("story")
+        .arg("nonexistent-story")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tasks"));
+}
+
+#[test]
+fn test_priority_persistence_across_restart() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Set priority ordering
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success();
+
+    // Verify the ordering persists by reading the DB directly
+    let db = tkr_test_db::open_db(&db_path);
+    let positions: Vec<(String, i64)> = db
+        .prepare(
+            "SELECT task_id, position FROM priority_order
+             WHERE scope_type = 'story' AND scope_id = ?1
+             ORDER BY position",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![&story_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(positions.len(), 3);
+    assert_eq!(positions[0].0, "ja-prio3");
+    assert_eq!(positions[0].1, 0);
+    assert_eq!(positions[1].1, 1);
+    assert_eq!(positions[2].1, 2);
+
+    // Verify ordering is gap-free
+    for (i, (_, pos)) in positions.iter().enumerate() {
+        assert_eq!(*pos, i as i64, "Position gap at index {}", i);
+    }
+}
