@@ -1,4 +1,5 @@
 mod cli;
+mod daemon;
 mod db;
 mod portfolio_view;
 mod sync;
