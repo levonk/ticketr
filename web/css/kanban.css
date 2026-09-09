@@ -1,0 +1,488 @@
+/* tkr Portfolio Kanban Board — dependency-free CSS */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f5;
+    color: #333;
+    font-size: 14px;
+}
+
+#app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+#header {
+    background: #fff;
+    border-bottom: 1px solid #ddd;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+#header h1 {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+#totalCount {
+    font-size: 13px;
+    color: #666;
+}
+
+#activeFilters {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex: 1;
+}
+
+.filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #e0e7ff;
+    color: #3730a3;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+}
+
+.filter-chip .chip-remove {
+    cursor: pointer;
+    font-weight: bold;
+    margin-left: 2px;
+}
+
+.filter-chip .chip-remove:hover {
+    color: #dc2626;
+}
+
+#toggleFilters {
+    padding: 6px 14px;
+    background: #4f46e5;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+#toggleFilters:hover {
+    background: #4338ca;
+}
+
+/* Main layout */
+#main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Filter Sidebar */
+#filterSidebar {
+    width: 240px;
+    background: #fff;
+    border-right: 1px solid #ddd;
+    padding: 16px;
+    overflow-y: auto;
+    flex-shrink: 0;
+    transition: margin-left 0.2s;
+}
+
+#filterSidebar.hidden {
+    margin-left: -240px;
+}
+
+#filterSidebar h2 {
+    font-size: 16px;
+    margin-bottom: 12px;
+}
+
+.filter-section {
+    margin-bottom: 16px;
+}
+
+.filter-section h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    color: #666;
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+}
+
+.filter-list {
+    list-style: none;
+}
+
+.filter-list li {
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.filter-list li:hover {
+    background: #f0f0f0;
+}
+
+.filter-list li.selected {
+    background: #e0e7ff;
+    color: #3730a3;
+    font-weight: 600;
+}
+
+.filter-list li.zero-count {
+    color: #aaa;
+}
+
+.filter-list li.zero-count:hover {
+    background: transparent;
+}
+
+.filter-count {
+    font-size: 10px;
+    vertical-align: super;
+    color: #666;
+    margin-left: auto;
+}
+
+.filter-list li.selected .filter-count {
+    color: #3730a3;
+}
+
+.filter-list li.zero-count .filter-count {
+    color: #ccc;
+}
+
+#clearFilters {
+    width: 100%;
+    padding: 8px;
+    background: transparent;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    margin-top: 8px;
+}
+
+#clearFilters:hover {
+    background: #f5f5f5;
+}
+
+/* Kanban Board */
+#board {
+    display: flex;
+    gap: 12px;
+    padding: 16px;
+    overflow-x: auto;
+    flex: 1;
+}
+
+.column {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    min-width: 220px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 100px);
+}
+
+.column.hidden {
+    display: none;
+}
+
+.column-header {
+    padding: 10px 12px;
+    border-bottom: 2px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.column-header h2 {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.column-count {
+    font-size: 11px;
+    vertical-align: super;
+    color: #666;
+    background: #f0f0f0;
+    padding: 1px 6px;
+    border-radius: 10px;
+}
+
+.column-body {
+    padding: 8px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 100px;
+}
+
+.column-body.drag-over {
+    background: #e0e7ff;
+    border: 2px dashed #4f46e5;
+}
+
+/* Card */
+.card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: box-shadow 0.15s, transform 0.15s;
+    position: relative;
+}
+
+.card:hover {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+    transform: translateY(-1px);
+}
+
+.card.dragging {
+    opacity: 0.5;
+}
+
+.card-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    line-height: 1.3;
+}
+
+.card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.card-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 500;
+}
+
+.badge-project {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.badge-app {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.badge-tag {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #888;
+}
+
+.card-priority {
+    font-weight: 600;
+    color: #4f46e5;
+}
+
+.card-deps {
+    color: #dc2626;
+}
+
+.card-blocked {
+    color: #dc2626;
+    font-weight: 600;
+}
+
+/* Drag disabled state */
+.column.drag-disabled .column-body {
+    position: relative;
+}
+
+.column.drag-disabled .column-body::after {
+    content: "\1F512";
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 14px;
+    opacity: 0.4;
+}
+
+/* Detail Panel */
+#detailPanel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 400px;
+    height: 100vh;
+    background: #fff;
+    box-shadow: -2px 0 8px rgba(0,0,0,0.15);
+    z-index: 100;
+    overflow-y: auto;
+    transition: transform 0.2s;
+}
+
+#detailPanel.hidden {
+    transform: translateX(100%);
+    display: block;
+}
+
+#detailHeader {
+    padding: 16px;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#detailHeader h2 {
+    font-size: 18px;
+}
+
+#detailHeader button {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: #666;
+}
+
+#detailForm {
+    padding: 16px;
+}
+
+.detail-field {
+    margin-bottom: 14px;
+}
+
+.detail-field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.detail-field input,
+.detail-field select,
+.detail-field textarea {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.detail-field textarea {
+    resize: vertical;
+}
+
+.detail-field span {
+    font-size: 13px;
+    color: #333;
+}
+
+.detail-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.detail-actions button {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.detail-actions button[type="submit"] {
+    background: #4f46e5;
+    color: #fff;
+}
+
+.detail-actions button[type="button"] {
+    background: #f0f0f0;
+    color: #333;
+}
+
+/* Toast */
+#toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #dc2626;
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 6px;
+    z-index: 200;
+    font-size: 13px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+#toast.hidden {
+    display: none;
+}
+
+/* Cross-altitude tooltip */
+#crossAltitudeTooltip {
+    position: fixed;
+    background: #1f2937;
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    z-index: 300;
+    max-width: 280px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    pointer-events: none;
+}
+
+#crossAltitudeTooltip.hidden {
+    display: none;
+}
+
+/* Utility */
+.hidden {
+    display: none !important;
+}
+
+/* Responsive: tablet */
+@media (max-width: 1024px) {
+    #filterSidebar {
+        width: 200px;
+    }
+    .column {
+        min-width: 180px;
+    }
+}
