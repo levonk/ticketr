@@ -10,7 +10,7 @@ PRD: [feat-202609081145-portfolio-layer.md](../feat-202609081145-portfolio-layer
 | 03-001 | App CRUD commands + auto-create default app | 03 | [x] Done |  | true | 02-002 | 04-001 | cli, app | feature/current/portfolio-layer/story-03-001-app-crud |
 | 03-002 | Requirement CRUD commands (create, list, show, supersede) | 03 | [x] Done |  | true | 02-001 | 04-003 | cli, requirement | feature/current/portfolio-layer/story-03-002-requirement-crud |
 | 03-003 | Story CRUD commands (create, list, show, ship) | 03 | [x] Done |  | true | 02-001 | 04-001, 04-003 | cli, story | feature/current/portfolio-layer/story-03-003-story-crud |
-| 03-004 | Markdown to SQLite sync (tkr sync) | 03 | [ ] Todo |  | true | 02-002 | 04-001, 04-002, 05-001 | sync, db | feature/current/portfolio-layer/story-03-004-markdown-sync |
+| 03-004 | Markdown to SQLite sync (tkr sync) | 03 | [x] Done |  | true | 02-002 | 04-001, 04-002, 05-001 | sync, db | feature/current/portfolio-layer/story-03-004-markdown-sync |
 | 04-001 | Link tasks to stories (markdown frontmatter + DB sync) | 04 | [ ] Todo |  | true | 03-001, 03-003, 03-004 | 05-002 | ticket, story | feature/current/portfolio-layer/story-04-001-task-story-linking |
 | 04-002 | Tags field in Ticket + tag CLI + tag sync | 04 | [ ] Todo |  | true | 03-004 | 05-002 | ticket, tag | feature/current/portfolio-layer/story-04-002-tags |
 | 04-003 | Portfolio views CLI (by-requirement, by-story, by-tag, by-project) | 04 | [ ] Todo |  | true | 03-002, 03-003, 03-004 | 05-002 | cli, views | feature/current/portfolio-layer/story-04-003-portfolio-views |
