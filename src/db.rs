@@ -89,6 +89,61 @@ pub enum AppSubcommand {
     Sunset { id: i64 },
 }
 
+/// A requirement record — a durable constraint at the strategic level of
+/// the hierarchy. Requirements live under a portfolio and group stories.
+#[derive(Debug, Serialize)]
+pub struct Requirement {
+    pub id: String,
+    pub portfolio_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub state: String,
+    pub created: String,
+    pub target_date: Option<String>,
+    pub position: i64,
+}
+
+/// Subcommands for `tkr requirement`.
+#[derive(Subcommand)]
+pub enum RequirementSubcommand {
+    /// Create a new requirement under a portfolio
+    Create {
+        title: String,
+        #[arg(short = 'p', long = "portfolio")]
+        portfolio: String,
+        #[arg(short = 'd', long = "description")]
+        description: Option<String>,
+        #[arg(short = 's', long = "state", default_value = "proposed")]
+        state: String,
+        #[arg(long = "target-date")]
+        target_date: Option<String>,
+    },
+    /// List requirements, optionally filtered by portfolio
+    List {
+        #[arg(short = 'p', long = "portfolio")]
+        portfolio: Option<String>,
+    },
+    /// Show requirement details
+    Show { id: String },
+    /// Transition a requirement to the superseded (terminal) state
+    Supersede { id: String },
+}
+
+/// Valid requirement state values per the PRD requirement vocabulary.
+const VALID_REQUIREMENT_STATES: &[&str] =
+    &["surfaced", "proposed", "planned", "current", "superseded"];
+
+/// Validate that `state` is one of the allowed requirement state values.
+fn validate_requirement_state(state: &str) -> Result<()> {
+    if !VALID_REQUIREMENT_STATES.contains(&state) {
+        anyhow::bail!(
+            "Invalid requirement state \"{}\". Allowed: surfaced, proposed, planned, current, superseded",
+            state
+        );
+    }
+    Ok(())
+}
+
 /// Valid app state values per the PRD deployment vocabulary.
 const VALID_APP_STATES: &[&str] = &["sketched", "drafted", "deployed", "deprecated", "sunset"];
 
@@ -517,6 +572,150 @@ impl PortfolioDb {
             rusqlite::params![project_id, created],
         )?;
         Ok(Some(self.conn.last_insert_rowid()))
+    }
+
+    // -----------------------------------------------------------------
+    // Requirement CRUD
+    // -----------------------------------------------------------------
+
+    /// Generate a requirement ID with the `req-` prefix using a timestamp
+    /// and UUID fragment for entropy, matching the pattern used by
+    /// [`TicketManager::generate_id`].
+    pub fn generate_requirement_id(&self) -> Result<String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis();
+        let uuid = uuid::Uuid::new_v4();
+        let uuid_str = uuid.as_simple().to_string();
+        let hash = format!("{:x}{}", timestamp % 10000, &uuid_str[..4]);
+        Ok(format!("req-{}", hash))
+    }
+
+    /// Create a new requirement under a portfolio. Validates the state
+    /// against the PRD vocabulary, checks that the portfolio exists, and
+    /// generates a `req-` prefixed ID. Returns the new requirement ID.
+    pub fn create_requirement(
+        &self,
+        portfolio_id: &str,
+        title: &str,
+        description: Option<&str>,
+        state: &str,
+        target_date: Option<&str>,
+    ) -> Result<String> {
+        validate_requirement_state(state)?;
+
+        // Verify the portfolio exists (FK enforcement)
+        let portfolio_exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM portfolios WHERE id = ?1",
+            rusqlite::params![portfolio_id],
+            |row| row.get(0),
+        )?;
+        if !portfolio_exists {
+            anyhow::bail!("Portfolio not found: {}", portfolio_id);
+        }
+
+        let id = self.generate_requirement_id()?;
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO requirements (id, portfolio_id, title, description, state, created, target_date, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+            rusqlite::params![id, portfolio_id, title, description, state, created, target_date],
+        )?;
+        Ok(id)
+    }
+
+    /// List requirements, optionally filtered by portfolio. Ordered by
+    /// position then creation time.
+    pub fn list_requirements(&self, portfolio_id: Option<&str>) -> Result<Vec<Requirement>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, portfolio_id, title, description, state, created, target_date, position
+             FROM requirements
+             WHERE (?1 IS NULL OR portfolio_id = ?1)
+             ORDER BY position, created",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![portfolio_id], |row| {
+            Ok(Requirement {
+                id: row.get(0)?,
+                portfolio_id: row.get(1)?,
+                title: row.get(2)?,
+                description: row.get(3)?,
+                state: row.get(4)?,
+                created: row.get(5)?,
+                target_date: row.get(6)?,
+                position: row.get(7)?,
+            })
+        })?;
+        let mut requirements = Vec::new();
+        for row in rows {
+            requirements.push(row?);
+        }
+        Ok(requirements)
+    }
+
+    /// Retrieve a single requirement by ID. Returns an error if not found.
+    pub fn get_requirement(&self, id: &str) -> Result<Requirement> {
+        self.conn
+            .query_row(
+                "SELECT id, portfolio_id, title, description, state, created, target_date, position
+                 FROM requirements WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(Requirement {
+                        id: row.get(0)?,
+                        portfolio_id: row.get(1)?,
+                        title: row.get(2)?,
+                        description: row.get(3)?,
+                        state: row.get(4)?,
+                        created: row.get(5)?,
+                        target_date: row.get(6)?,
+                        position: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    anyhow::anyhow!("Requirement not found: {}", id)
+                }
+                _ => anyhow::anyhow!(e),
+            })
+    }
+
+    /// Count the number of stories linked to a requirement. Used by the
+    /// `show` command to display a story count and by `supersede` to warn
+    /// if stories are still attached.
+    pub fn count_requirement_stories(&self, id: &str) -> Result<i64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM stories WHERE requirement_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Transition a requirement to the `superseded` (terminal) state.
+    /// Returns an error if the requirement does not exist. Returns the
+    /// updated requirement and the count of attached stories (so the
+    /// caller can warn the user).
+    pub fn supersede_requirement(&self, id: &str) -> Result<(Requirement, i64)> {
+        let story_count = self.count_requirement_stories(id).unwrap_or(0);
+
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM requirements WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("Requirement not found: {}", id);
+        }
+
+        self.conn.execute(
+            "UPDATE requirements SET state = 'superseded' WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+
+        let requirement = self.get_requirement(id)?;
+        Ok((requirement, story_count))
     }
 }
 

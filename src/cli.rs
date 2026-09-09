@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement};
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 
@@ -140,6 +140,11 @@ pub enum Commands {
     App {
         #[command(subcommand)]
         command: AppSubcommand,
+    },
+    /// Requirement management
+    Requirement {
+        #[command(subcommand)]
+        command: RequirementSubcommand,
     },
 }
 
@@ -464,6 +469,70 @@ impl Commands {
                     AppSubcommand::Sunset { id } => {
                         let app = db.sunset_app(id)?;
                         println!("App {} (\"{}\") transitioned to sunset", app.id, app.name);
+                    },
+                }
+            },
+            Commands::Requirement { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    RequirementSubcommand::Create { title, portfolio, description, state, target_date } => {
+                        let id = db.create_requirement(
+                            &portfolio,
+                            &title,
+                            description.as_deref(),
+                            &state,
+                            target_date.as_deref(),
+                        )?;
+                        println!("Created requirement \"{}\" (id: {}) in portfolio \"{}\"", title, id, portfolio);
+                    },
+                    RequirementSubcommand::List { portfolio } => {
+                        let requirements = db.list_requirements(portfolio.as_deref())?;
+                        if requirements.is_empty() {
+                            println!("No requirements found");
+                        } else {
+                            println!(
+                                "{:<14} {:<20} {:<10} {:<12} {:<12}",
+                                "ID", "Title", "State", "Portfolio", "Target Date"
+                            );
+                            for r in &requirements {
+                                let target = r.target_date.clone().unwrap_or_else(|| "—".to_string());
+                                println!(
+                                    "{:<14} {:<20} {:<10} {:<12} {:<12}",
+                                    r.id, r.title, r.state, r.portfolio_id, target
+                                );
+                            }
+                        }
+                    },
+                    RequirementSubcommand::Show { id } => {
+                        let req: Requirement = db.get_requirement(&id)?;
+                        let story_count = db.count_requirement_stories(&id).unwrap_or(0);
+                        println!("Requirement: {}", req.id);
+                        println!("Title:       {}", req.title);
+                        println!("State:       {}", req.state);
+                        println!("Portfolio:   {}", req.portfolio_id);
+                        let target = req.target_date.unwrap_or_else(|| "—".to_string());
+                        println!("Target Date: {}", target);
+                        println!("Stories:     {}", story_count);
+                        match req.description {
+                            Some(d) => println!("\nDescription:\n{}", d),
+                            None => println!("\nDescription: (none)"),
+                        }
+                    },
+                    RequirementSubcommand::Supersede { id } => {
+                        let (req, story_count) = db.supersede_requirement(&id)?;
+                        println!(
+                            "Requirement {} (\"{}\") transitioned to superseded",
+                            req.id, req.title
+                        );
+                        if story_count > 0 {
+                            eprintln!(
+                                "Warning: {} {} still attached to this requirement",
+                                story_count,
+                                if story_count == 1 { "story is" } else { "stories are" }
+                            );
+                        }
                     },
                 }
             },

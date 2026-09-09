@@ -1914,3 +1914,295 @@ fn test_project_register_creates_default_app() {
     // Keep repo_temp alive
     std::mem::forget(repo_temp);
 }
+
+// ---------------------------------------------------------------------------
+// Requirement CRUD integration tests (story 03-002)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio in the DB (reuses the existing helper but
+/// scoped locally for clarity in requirement tests).
+fn setup_portfolio(db_path: &std::path::Path, id: &str, name: &str) {
+    create_portfolio(db_path, id, name);
+}
+
+#[test]
+fn test_requirement_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .arg("--description=Must support multi-account sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created requirement"))
+        .stdout(predicate::str::contains("req-"));
+}
+
+#[test]
+fn test_requirement_create_invalid_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Test")
+        .arg("--portfolio=personal")
+        .arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid requirement state"));
+}
+
+#[test]
+fn test_requirement_create_nonexistent_portfolio() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Test")
+        .arg("--portfolio=nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create two requirements
+    for title in ["Multi-account Sync", "Offline-first"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("requirement")
+            .arg("create")
+            .arg(title)
+            .arg("--portfolio=personal")
+            .assert()
+            .success();
+    }
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("Offline-first"));
+}
+
+#[test]
+fn test_requirement_list_by_portfolio() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+    setup_portfolio(&db_path, "business", "Business");
+
+    // Create a requirement in each portfolio
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Enterprise SSO")
+        .arg("--portfolio=business")
+        .assert()
+        .success();
+
+    // List filtered to personal — should contain personal, not business
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list").arg("--portfolio=personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("Enterprise SSO").not());
+}
+
+#[test]
+fn test_requirement_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No requirements found"));
+}
+
+#[test]
+fn test_requirement_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .arg("--description=Must support multi-account sync")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    // Extract the requirement ID from the output
+    let req_id = stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Show the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("proposed"))
+        .stdout(predicate::str::contains("Must support multi-account sync"));
+}
+
+#[test]
+fn test_requirement_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg("req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_supersede() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let req_id = stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Supersede the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("supersede").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("superseded"));
+
+    // Verify state is superseded via show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("superseded"));
+}
+
+#[test]
+fn test_requirement_supersede_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("supersede").arg("req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_id_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Test").arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+    // The output should contain a req- prefixed ID
+    assert!(stdout.contains("req-"));
+}
+
+#[test]
+fn test_requirement_create_with_target_date_and_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Offline-first")
+        .arg("--portfolio=personal")
+        .arg("--state=planned")
+        .arg("--target-date=2026-12-01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created requirement"));
+
+    // Verify the state and target date appear in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("planned"))
+        .stdout(predicate::str::contains("2026-12-01"));
+}
