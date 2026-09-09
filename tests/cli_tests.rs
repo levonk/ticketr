@@ -1376,3 +1376,341 @@ fn test_portfolio_auto_creates_db() {
 
     assert!(db_path.exists());
 }
+
+// ---------------------------------------------------------------------------
+// Project registration integration tests (story 02-002)
+// ---------------------------------------------------------------------------
+
+use std::process::Command as StdCommand;
+
+/// Helper: create a temp git repo with a remote and a `.tickets` directory.
+fn create_temp_git_repo() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    let repo_path = temp.path();
+
+    StdCommand::new("git")
+        .arg("init")
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    StdCommand::new("git")
+        .arg("remote")
+        .arg("add")
+        .arg("origin")
+        .arg("https://github.com/levonk/test-repo.git")
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    // Create .tickets dir
+    std::fs::create_dir_all(repo_path.join(".tickets")).unwrap();
+
+    temp
+}
+
+/// Helper: create a portfolio in the DB.
+fn create_portfolio(db_path: &std::path::Path, id: &str, name: &str) {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg(id)
+        .arg(name)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_project_register() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Registered project"))
+        .stdout(predicate::str::contains("seeded"))
+        .stdout(predicate::str::contains("levonk/test-repo"));
+}
+
+#[test]
+fn test_project_register_with_custom_name() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .arg("--name")
+        .arg("custom-project-name")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("custom-project-name"));
+}
+
+#[test]
+fn test_project_register_nonexistent_portfolio() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_register_nonexistent_path() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg("/nonexistent/path/to/repo")
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("does not exist")));
+}
+
+#[test]
+fn test_project_register_duplicate() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // First registration
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Duplicate registration
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already registered"));
+}
+
+#[test]
+fn test_project_list() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register a project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // List
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("seeded"));
+}
+
+#[test]
+fn test_project_list_filtered_by_portfolio() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create two portfolios
+    create_portfolio(&db_path, "personal", "Personal");
+    create_portfolio(&db_path, "business", "Business");
+
+    // Register a project in each
+    let repo1 = create_temp_git_repo();
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo1.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let repo2 = create_temp_git_repo();
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo2.path())
+        .arg("--portfolio")
+        .arg("business")
+        .assert()
+        .success();
+
+    // List filtered to personal — should contain personal, not business
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("business").not());
+}
+
+#[test]
+fn test_project_unregister() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path().to_str().unwrap().to_string();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Unregister
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("unregister")
+        .arg(&repo_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unregistered"));
+
+    // List should be empty
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No projects").or(predicate::str::contains("0 projects")));
+}
+
+#[test]
+fn test_project_unregister_not_found() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("unregister")
+        .arg("/nonexistent/path")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_auto_creates_db() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    // Create portfolio first (this creates the DB)
+    create_portfolio(&db_path, "personal", "Personal");
+
+    assert!(db_path.exists());
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_project_register_non_git_repo() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create a plain directory (not a git repo)
+    let repo_temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(repo_temp.path().join(".tickets")).unwrap();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Should still register, but without GitHub info
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(none)").or(predicate::str::contains("Registered")));
+}
