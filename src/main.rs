@@ -1,4 +1,11 @@
+mod api;
 mod cli;
+mod daemon;
+mod db;
+mod github_sync;
+mod portfolio_view;
+mod priority;
+mod sync;
 mod ticket;
 mod utils;
 mod web;

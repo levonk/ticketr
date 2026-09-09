@@ -1,5 +1,46 @@
 use clap::{Parser, Subcommand};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story, AiTaskSubcommand, AiTask, PrioritySubcommand};
+use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
+use crate::utils::detect_github_info;
+use crate::portfolio_view;
+
+/// Subcommands for `tkr daemon`.
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Start the daemon as a background process
+    Start,
+    /// Stop the running daemon
+    Stop,
+    /// Check daemon status
+    Status,
+    /// Restart the daemon
+    Restart,
+    /// Run the daemon loop (internal — spawned by `start`)
+    #[command(hide = true)]
+    Run,
+}
+
+/// Subcommands for `tkr tag`.
+#[derive(Subcommand)]
+pub enum TagSubcommand {
+    /// Add a tag to a task (writes to markdown frontmatter)
+    Add {
+        task_id: String,
+        tag: String,
+    },
+    /// Remove a tag from a task (writes to markdown frontmatter)
+    Remove {
+        task_id: String,
+        tag: String,
+    },
+    /// List all tags, or tags with their associated task IDs
+    List {
+        /// Show each tag with its associated task IDs
+        #[arg(long)]
+        tasks: bool,
+    },
+}
 
 #[derive(Parser)]
 #[command(name = "tkr")]
@@ -124,6 +165,63 @@ pub enum Commands {
     },
     /// Start terminal user interface (TUI)
     Tui,
+    /// Portfolio management
+    Portfolio {
+        #[command(subcommand)]
+        command: PortfolioSubcommand,
+    },
+    /// Project management
+    Project {
+        #[command(subcommand)]
+        command: ProjectSubcommand,
+    },
+    /// App management
+    App {
+        #[command(subcommand)]
+        command: AppSubcommand,
+    },
+    /// Requirement management
+    Requirement {
+        #[command(subcommand)]
+        command: RequirementSubcommand,
+    },
+    /// Story management
+    Story {
+        #[command(subcommand)]
+        command: StorySubcommand,
+    },
+    /// Sync markdown tickets into the SQLite portfolio DB
+    Sync {
+        /// Sync from GitHub (bidirectional Issues sync)
+        #[arg(long)]
+        github: bool,
+        /// Show sync status instead of running a sync
+        #[arg(long)]
+        status: bool,
+        /// Dry-run mode: log what would be synced without making API calls
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Tag management (cross-cutting task tags)
+    Tag {
+        #[command(subcommand)]
+        command: TagSubcommand,
+    },
+    /// AI Task management (delegated subtasks linked to a parent task)
+    AiTask {
+        #[command(subcommand)]
+        command: AiTaskSubcommand,
+    },
+    /// Daemon management (file watcher + auto-sync)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+    /// Priority ordering (drag-and-drop task reordering within a scope)
+    Priority {
+        #[command(subcommand)]
+        command: PrioritySubcommand,
+    },
 }
 
 impl Commands {
@@ -259,7 +357,701 @@ impl Commands {
             Commands::Tui => {
                 crate::tui::run_tui(manager).await?;
             },
+            Commands::Portfolio { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    PortfolioSubcommand::Create { id, name, description } => {
+                        db.create_portfolio(&id, &name, description.as_deref())?;
+                        println!("Created portfolio: {} ({})", id, name);
+                        println!("State: curated");
+                    },
+                    PortfolioSubcommand::List => {
+                        let portfolios = db.list_portfolios(false)?;
+                        if portfolios.is_empty() {
+                            println!("No portfolios found");
+                        } else {
+                            println!(
+                                "{:<14} {:<14} {:<9} Created",
+                                "ID", "Name", "State"
+                            );
+                            for p in portfolios {
+                                println!(
+                                    "{:<14} {:<14} {:<9} {}",
+                                    p.id, p.name, p.state, p.created
+                                );
+                            }
+                        }
+                    },
+                    PortfolioSubcommand::Show { id } => {
+                        let p: Portfolio = db.get_portfolio(&id)?;
+                        println!("Portfolio: {}", p.id);
+                        println!("Name: {}", p.name);
+                        match p.description {
+                            Some(d) => println!("Description: {}", d),
+                            None => println!("Description: (none)"),
+                        }
+                        println!("State: {}", p.state);
+                        println!("Created: {}", p.created);
+                        println!("Position: {}", p.position);
+                    },
+                    PortfolioSubcommand::Dissolve { id } => {
+                        db.dissolve_portfolio(&id)?;
+                        let p = db.get_portfolio(&id)?;
+                        println!("Dissolved portfolio: {} ({})", p.id, p.name);
+                    },
+                    PortfolioSubcommand::View {
+                        by_requirement,
+                        by_story,
+                        by_tag,
+                        by_project,
+                        json,
+                    } => {
+                        execute_portfolio_view(
+                            &db,
+                            by_requirement,
+                            by_story,
+                            by_tag,
+                            by_project,
+                            json,
+                        )?;
+                    },
+                }
+            },
+            Commands::Project { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let mut db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    ProjectSubcommand::Register { path, portfolio, name } => {
+                        // Validate the repo path exists
+                        let repo_path = std::path::Path::new(&path);
+                        if !repo_path.exists() {
+                            anyhow::bail!(
+                                "Path does not exist: {}",
+                                repo_path.display()
+                            );
+                        }
+
+                        // Validate the portfolio exists
+                        db.get_portfolio(&portfolio)
+                            .map_err(|_| anyhow::anyhow!("Portfolio not found: {}", portfolio))?;
+
+                        // Canonicalize the repo path to an absolute path
+                        let repo_path = repo_path.canonicalize()?;
+                        let repo_path_str = repo_path.to_string_lossy().to_string();
+
+                        // Auto-detect the project name from the directory name
+                        let project_name = name.unwrap_or_else(|| {
+                            repo_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "unnamed".to_string())
+                        });
+
+                        // Auto-detect the .tickets directory
+                        let tickets_dir = if repo_path.join(".tickets").exists() {
+                            repo_path.join(".tickets")
+                        } else {
+                            // Default to <repo>/.tickets even if it doesn't exist yet
+                            repo_path.join(".tickets")
+                        };
+                        let tickets_dir_str = tickets_dir.to_string_lossy().to_string();
+
+                        // Auto-detect GitHub owner/repo from git remote
+                        let (github_owner, github_repo) = match detect_github_info(&repo_path)? {
+                            Some((owner, repo)) => (Some(owner), Some(repo)),
+                            None => (None, None),
+                        };
+
+                        let id = db.register_project(
+                            &portfolio,
+                            &project_name,
+                            &repo_path_str,
+                            &tickets_dir_str,
+                            github_owner.as_deref(),
+                            github_repo.as_deref(),
+                        )?;
+
+                        // Auto-create a default app for the new project
+                        let default_app_id = db.ensure_default_app(id)?;
+                        if let Some(app_id) = default_app_id {
+                            println!("Created default app (id: {}) for project {}", app_id, id);
+                        }
+
+                        let github_display = match (&github_owner, &github_repo) {
+                            (Some(o), Some(r)) => format!("{}/{}", o, r),
+                            _ => "(none)".to_string(),
+                        };
+
+                        println!("Registered project: {}", project_name);
+                        println!("  Portfolio: {}", portfolio);
+                        println!("  Repo: {}", repo_path_str);
+                        println!("  GitHub: {}", github_display);
+                        println!("  Tickets: {}", tickets_dir_str);
+                        println!("  State: seeded");
+                        println!("  ID: {}", id);
+                    },
+                    ProjectSubcommand::List { portfolio } => {
+                        let projects = db.list_projects(portfolio.as_deref())?;
+                        if projects.is_empty() {
+                            println!("No projects found");
+                        } else {
+                            println!(
+                                "{:<4} {:<16} {:<12} {:<34} {:<18} {:<8}",
+                                "ID", "Name", "Portfolio", "Repo", "GitHub", "State"
+                            );
+                            for p in projects {
+                                let github = match (&p.github_owner, &p.github_repo) {
+                                    (Some(o), Some(r)) => format!("{}/{}", o, r),
+                                    _ => "(none)".to_string(),
+                                };
+                                println!(
+                                    "{:<4} {:<16} {:<12} {:<34} {:<18} {:<8}",
+                                    p.id, p.name, p.portfolio_id, p.repo_path, github, p.state
+                                );
+                            }
+                        }
+                    },
+                    ProjectSubcommand::Unregister { path } => {
+                        let repo_path = std::path::Path::new(&path);
+                        let repo_path_str = if repo_path.exists() {
+                            repo_path.canonicalize()?.to_string_lossy().to_string()
+                        } else {
+                            path.clone()
+                        };
+                        db.unregister_project(&repo_path_str)?;
+                        println!("Unregistered project: {}", repo_path_str);
+                    },
+                }
+            },
+            Commands::App { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    AppSubcommand::Create { name, project, description, state } => {
+                        let id = db.create_app(
+                            project,
+                            &name,
+                            description.as_deref(),
+                            &state,
+                        )?;
+                        println!("Created app \"{}\" (id: {}) for project {}", name, id, project);
+                    },
+                    AppSubcommand::List { project } => {
+                        let apps = db.list_apps(project)?;
+                        if apps.is_empty() {
+                            println!("No apps found");
+                        } else {
+                            println!(
+                                "{:<4} {:<12} {:<10} {:<10} Description",
+                                "ID", "Name", "State", "Project"
+                            );
+                            for a in apps {
+                                let desc = a.description.unwrap_or_else(|| "(none)".to_string());
+                                println!(
+                                    "{:<4} {:<12} {:<10} {:<10} {}",
+                                    a.id, a.name, a.state, a.project_id, desc
+                                );
+                            }
+                        }
+                    },
+                    AppSubcommand::Sunset { id } => {
+                        let app = db.sunset_app(id)?;
+                        println!("App {} (\"{}\") transitioned to sunset", app.id, app.name);
+                    },
+                }
+            },
+            Commands::Requirement { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    RequirementSubcommand::Create { title, portfolio, description, state, target_date } => {
+                        let id = db.create_requirement(
+                            &portfolio,
+                            &title,
+                            description.as_deref(),
+                            &state,
+                            target_date.as_deref(),
+                        )?;
+                        println!("Created requirement \"{}\" (id: {}) in portfolio \"{}\"", title, id, portfolio);
+                    },
+                    RequirementSubcommand::List { portfolio } => {
+                        let requirements = db.list_requirements(portfolio.as_deref())?;
+                        if requirements.is_empty() {
+                            println!("No requirements found");
+                        } else {
+                            println!(
+                                "{:<14} {:<20} {:<10} {:<12} {:<12}",
+                                "ID", "Title", "State", "Portfolio", "Target Date"
+                            );
+                            for r in &requirements {
+                                let target = r.target_date.clone().unwrap_or_else(|| "—".to_string());
+                                println!(
+                                    "{:<14} {:<20} {:<10} {:<12} {:<12}",
+                                    r.id, r.title, r.state, r.portfolio_id, target
+                                );
+                            }
+                        }
+                    },
+                    RequirementSubcommand::Show { id } => {
+                        let req: Requirement = db.get_requirement(&id)?;
+                        let story_count = db.count_requirement_stories(&id).unwrap_or(0);
+                        println!("Requirement: {}", req.id);
+                        println!("Title:       {}", req.title);
+                        println!("State:       {}", req.state);
+                        println!("Portfolio:   {}", req.portfolio_id);
+                        let target = req.target_date.unwrap_or_else(|| "—".to_string());
+                        println!("Target Date: {}", target);
+                        println!("Stories:     {}", story_count);
+                        match req.description {
+                            Some(d) => println!("\nDescription:\n{}", d),
+                            None => println!("\nDescription: (none)"),
+                        }
+                    },
+                    RequirementSubcommand::Supersede { id } => {
+                        let (req, story_count) = db.supersede_requirement(&id)?;
+                        println!(
+                            "Requirement {} (\"{}\") transitioned to superseded",
+                            req.id, req.title
+                        );
+                        if story_count > 0 {
+                            eprintln!(
+                                "Warning: {} {} still attached to this requirement",
+                                story_count,
+                                if story_count == 1 { "story is" } else { "stories are" }
+                            );
+                        }
+                    },
+                }
+            },
+            Commands::Story { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    StorySubcommand::Create { title, requirement, app, description, state, target_date } => {
+                        let id = db.create_story(
+                            requirement.as_deref(),
+                            app,
+                            &title,
+                            description.as_deref(),
+                            &state,
+                            target_date.as_deref(),
+                        )?;
+                        let req_display = requirement.as_deref().unwrap_or("—");
+                        let app_display = app.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                        println!(
+                            "Created story \"{}\" (id: {}) for requirement {}, app {}",
+                            title, id, req_display, app_display
+                        );
+                    },
+                    StorySubcommand::List { requirement, app, state } => {
+                        let stories = db.list_stories(
+                            requirement.as_deref(),
+                            app,
+                            state.as_deref(),
+                        )?;
+                        if stories.is_empty() {
+                            println!("No stories found");
+                        } else {
+                            println!(
+                                "{:<14} {:<20} {:<10} {:<14} {:<6}",
+                                "ID", "Title", "State", "Requirement", "App"
+                            );
+                            for s in &stories {
+                                let req = s.requirement_id.clone().unwrap_or_else(|| "—".to_string());
+                                let a = s.app_id.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                                println!(
+                                    "{:<14} {:<20} {:<10} {:<14} {:<6}",
+                                    s.id, s.title, s.state, req, a
+                                );
+                            }
+                        }
+                    },
+                    StorySubcommand::Show { id } => {
+                        let story: Story = db.get_story(&id)?;
+                        let task_count = db.count_story_tasks(&id).unwrap_or(0);
+                        println!("Story:      {}", story.id);
+                        println!("Title:       {}", story.title);
+                        println!("State:       {}", story.state);
+                        let req_display = story.requirement_id.unwrap_or_else(|| "—".to_string());
+                        println!("Requirement: {}", req_display);
+                        let app_display = story.app_id.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                        println!("App:         {}", app_display);
+                        let target = story.target_date.unwrap_or_else(|| "—".to_string());
+                        println!("Target Date: {}", target);
+                        println!("Tasks:       {}", task_count);
+                        match story.description {
+                            Some(d) => println!("\nDescription:\n{}", d),
+                            None => println!("\nDescription: (none)"),
+                        }
+                    },
+                    StorySubcommand::Ship { id } => {
+                        let story = db.ship_story(&id)?;
+                        println!(
+                            "Story {} (\"{}\") transitioned to shipped",
+                            story.id, story.title
+                        );
+                    },
+                    StorySubcommand::Link { task_id, story_id } => {
+                        // Validate the story exists before touching markdown
+                        if !db.story_exists(&story_id)? {
+                            anyhow::bail!(
+                                "story \"{}\" not found in portfolio DB",
+                                story_id
+                            );
+                        }
+                        manager.link_story(&task_id, &story_id)?;
+                    },
+                    StorySubcommand::Unlink { task_id } => {
+                        manager.unlink_story(&task_id)?;
+                    },
+                }
+            },
+            Commands::Sync { github, status, dry_run } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+
+                if github {
+                    let gh_sync = crate::github_sync::GitHubSync::new(&db);
+
+                    if status {
+                        let state = gh_sync.status()?;
+                        println!("GitHub Sync Status:");
+                        match state.last_github_sync {
+                            Some(ts) => println!("  Last sync: {}", ts),
+                            None => println!("  Last sync: (never)"),
+                        }
+                        println!("  Projects synced: {}", state.projects_synced);
+                        println!("  Total tasks linked: {}", state.total_tasks_linked);
+                        println!("  Errors: {}", state.github_sync_errors);
+                        return Ok(());
+                    }
+
+                    // Build the client (real or dry-run).
+                    let client: Option<crate::github_sync::ReqwestClient> = if dry_run {
+                        None
+                    } else {
+                        match crate::github_sync::ReqwestClient::new(None) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                eprintln!("Warning: could not create GitHub client: {}", e);
+                                eprintln!("Falling back to dry-run mode.");
+                                None
+                            }
+                        }
+                    };
+
+                    let client_ref: Option<&dyn crate::github_sync::GitHubClient> =
+                        client.as_ref().map(|c| c as &dyn crate::github_sync::GitHubClient);
+
+                    let report = gh_sync.sync(client_ref, dry_run).await?;
+
+                    if report.projects.is_empty() {
+                        println!("No projects with GitHub info to sync.");
+                        return Ok(());
+                    }
+
+                    let project_word = if report.projects.len() == 1 { "project" } else { "projects" };
+                    println!("Syncing {} {} with GitHub:", report.projects.len(), project_word);
+                    for pr in &report.projects {
+                        let account_display = pr.github_account.as_deref().unwrap_or("(default)");
+                        println!(
+                            "  {} ({}/{}) via account: {}",
+                            pr.project_name, pr.github_owner, pr.github_repo, account_display
+                        );
+                        let conflict_suffix = if pr.conflicts > 0 {
+                            format!(", {} conflict(s)", pr.conflicts)
+                        } else {
+                            String::new()
+                        };
+                        let error_suffix = if pr.errors > 0 {
+                            format!(", {} error(s)", pr.errors)
+                        } else {
+                            String::new()
+                        };
+                        println!(
+                            "    Pushed {} task(s), pulled {} task(s){}{}",
+                            pr.pushed, pr.pulled, conflict_suffix, error_suffix
+                        );
+                    }
+
+                    println!(
+                        "GitHub sync complete: {} pushed, {} pulled, {} conflicts, {} errors",
+                        report.total_pushed, report.total_pulled, report.total_conflicts, report.total_errors
+                    );
+                    return Ok(());
+                }
+
+                if status {
+                    let sync_manager = SyncManager::new(&db);
+                    let state = sync_manager.sync_status()?;
+                    match state.last_sync_at {
+                        Some(ts) => println!("Last sync: {}", ts),
+                        None => println!("Last sync: (never)"),
+                    }
+                    println!("Projects: {}", state.project_count);
+                    println!("Tasks:    {}", state.task_count);
+                    return Ok(());
+                }
+
+                let sync_manager = SyncManager::new(&db);
+                let projects = sync_manager.list_registered_projects()?;
+                let project_word = if projects.len() == 1 { "project" } else { "projects" };
+                println!("Syncing {} {}...", projects.len(), project_word);
+
+                let report = sync_manager.sync_all()?;
+
+                for pr in &report.projects {
+                    println!(
+                        "  Project \"{}\" (id: {}): {} tasks indexed, {} updated, {} removed",
+                        pr.project_name, pr.project_id,
+                        pr.tasks_indexed, pr.tasks_updated, pr.tasks_removed
+                    );
+                }
+
+                let skipped_suffix = if report.files_skipped > 0 {
+                    format!(" ({} file skipped)", report.files_skipped)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "Sync complete: {} tasks indexed, {} updated, {} removed{}",
+                    report.tasks_indexed, report.tasks_updated, report.tasks_removed, skipped_suffix
+                );
+            },
+            Commands::Tag { command } => {
+                match command {
+                    TagSubcommand::Add { task_id, tag } => {
+                        manager.add_tag(&task_id, &tag)?;
+                    },
+                    TagSubcommand::Remove { task_id, tag } => {
+                        manager.remove_tag(&task_id, &tag)?;
+                    },
+                    TagSubcommand::List { tasks } => {
+                        let db_path = PortfolioDb::db_path()?;
+                        let db = PortfolioDb::open(&db_path)?;
+                        db.migrate()?;
+                        if tasks {
+                            let tags = db.list_tags_with_tasks()?;
+                            if tags.is_empty() {
+                                println!("No tags found");
+                            } else {
+                                for (name, task_ids) in tags {
+                                    if task_ids.is_empty() {
+                                        println!("{}:", name);
+                                    } else {
+                                        println!("{}: {}", name, task_ids.join(", "));
+                                    }
+                                }
+                            }
+                        } else {
+                            let tags = db.list_tags()?;
+                            if tags.is_empty() {
+                                println!("No tags found");
+                            } else {
+                                for name in tags {
+                                    println!("{}", name);
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+            Commands::AiTask { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    AiTaskSubcommand::Create { task_id, title, agent_profile } => {
+                        let id = db.create_ai_task(
+                            &task_id,
+                            &title,
+                            agent_profile.as_deref(),
+                        )?;
+                        println!("{}", id);
+                    },
+                    AiTaskSubcommand::List { task, state } => {
+                        let ai_tasks = db.list_ai_tasks(task.as_deref(), state.as_deref())?;
+                        if ai_tasks.is_empty() {
+                            println!("No AI Tasks found");
+                        } else {
+                            for t in &ai_tasks {
+                                println!("{} - {} ({}) -> {}", t.id, t.title, t.state, t.task_id);
+                            }
+                        }
+                    },
+                    AiTaskSubcommand::Show { id } => {
+                        let t: AiTask = db.get_ai_task(&id)?;
+                        println!("id: {}", t.id);
+                        println!("title: {}", t.title);
+                        println!("state: {}", t.state);
+                        match t.agent_profile {
+                            Some(p) => println!("agent_profile: {}", p),
+                            None => println!("agent_profile: (none)"),
+                        }
+                        println!("task_id: {}", t.task_id);
+                        println!("created: {}", t.created);
+                        match t.completed {
+                            Some(c) => println!("completed: {}", c),
+                            None => println!("completed: (none)"),
+                        }
+                        match t.result_summary {
+                            Some(s) => println!("result_summary: {}", s),
+                            None => println!("result_summary: (none)"),
+                        }
+                    },
+                    AiTaskSubcommand::UpdateState { id, state, summary } => {
+                        let t = db.update_ai_task_state(
+                            &id,
+                            &state,
+                            summary.as_deref(),
+                        )?;
+                        if state == "returned" {
+                            let completed = t.completed.unwrap_or_default();
+                            println!("Updated {} -> {} (completed: {})", t.id, t.state, completed);
+                        } else {
+                            println!("Updated {} -> {}", t.id, t.state);
+                        }
+                    },
+                }
+            },
+            Commands::Daemon { action } => {
+                match action {
+                    DaemonAction::Start => crate::daemon::start_daemon()?,
+                    DaemonAction::Stop => crate::daemon::stop_daemon()?,
+                    DaemonAction::Status => crate::daemon::status_daemon()?,
+                    DaemonAction::Restart => crate::daemon::restart_daemon()?,
+                    DaemonAction::Run => crate::daemon::run_daemon()?,
+                }
+            },
+            Commands::Priority { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                let pm = crate::priority::PriorityManager::new(&db.conn);
+                match command {
+                    PrioritySubcommand::Set { scope_type, scope_id, task_id, position } => {
+                        let ordered = pm.set_position(
+                            &scope_type,
+                            &scope_id,
+                            &task_id,
+                            position,
+                        )?;
+                        println!(
+                            "Moved {} to position {} in scope ({}, {})",
+                            task_id, position, scope_type, scope_id
+                        );
+                        println!("Updated ordering:");
+                        for (i, tid) in ordered.iter().enumerate() {
+                            let title_state: Option<(String, String)> = db.conn
+                                .query_row(
+                                    "SELECT title, state FROM tasks WHERE id = ?1",
+                                    rusqlite::params![tid],
+                                    |row| Ok((row.get(0)?, row.get(1)?)),
+                                )
+                                .ok();
+                            match title_state {
+                                Some((title, state)) => {
+                                    println!("  {}: {} ({}) [{}]", i, tid, title, state);
+                                }
+                                None => {
+                                    println!("  {}: {}", i, tid);
+                                }
+                            }
+                        }
+                    },
+                    PrioritySubcommand::List { scope_type, scope_id } => {
+                        let ordered = pm.get_ordering(&scope_type, &scope_id)?;
+                        if ordered.is_empty() {
+                            println!(
+                                "No tasks in scope ({}, {})",
+                                scope_type, scope_id
+                            );
+                        } else {
+                            println!(
+                                "Priority ordering for ({}, {}):",
+                                scope_type, scope_id
+                            );
+                            for (i, tid) in ordered.iter().enumerate() {
+                                let title_state: Option<(String, String)> = db.conn
+                                    .query_row(
+                                        "SELECT title, state FROM tasks WHERE id = ?1",
+                                        rusqlite::params![tid],
+                                        |row| Ok((row.get(0)?, row.get(1)?)),
+                                    )
+                                    .ok();
+                                match title_state {
+                                    Some((title, state)) => {
+                                        println!("  {}: {} - {} [{}]", i, tid, title, state);
+                                    }
+                                    None => {
+                                        println!("  {}: {}", i, tid);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            },
         }
         Ok(())
     }
+}
+
+/// Execute a `tkr portfolio view` subcommand.
+///
+/// Validates that exactly one grouping flag is set, runs the corresponding
+/// query, and renders the result as text or JSON.
+fn execute_portfolio_view(
+    db: &PortfolioDb,
+    by_requirement: bool,
+    by_story: bool,
+    by_tag: Option<Option<String>>,
+    by_project: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    // Count how many grouping flags are set.
+    let flag_count = [
+        by_requirement as u8,
+        by_story as u8,
+        by_tag.is_some() as u8,
+        by_project as u8,
+    ]
+    .iter()
+    .sum::<u8>();
+
+    if flag_count == 0 {
+        anyhow::bail!(
+            "Error: specify one of --by-requirement, --by-story, --by-tag, --by-project"
+        );
+    }
+    if flag_count > 1 {
+        anyhow::bail!("Error: specify exactly one grouping flag");
+    }
+
+    let result = if by_requirement {
+        portfolio_view::view_by_requirement(&db.conn)?
+    } else if by_story {
+        portfolio_view::view_by_story(&db.conn)?
+    } else if by_project {
+        portfolio_view::view_by_project(&db.conn)?
+    } else if let Some(tag_opt) = by_tag {
+        portfolio_view::view_by_tag(&db.conn, tag_opt.as_deref())?
+    } else {
+        unreachable!("validated above");
+    };
+
+    if json {
+        println!("{}", portfolio_view::render_json(&result)?);
+    } else {
+        print!("{}", portfolio_view::render_text(&result));
+    }
+
+    Ok(())
 }

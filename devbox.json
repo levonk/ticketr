@@ -22,7 +22,8 @@
     "github:levonk/smartfo": "",
     "yq-go": "",
     "git-secrets": "",
-    "git-imerge": ""
+    "git-imerge": "",
+    "github:kunchenguid/treehouse": ""
   },
   "shell": {
     "init_hook": [

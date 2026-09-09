@@ -1,0 +1,37 @@
+## Tech Context (Binding Constraint)
+
+This project uses the following tools. Use them, not alternatives.
+
+- Package manager: cargo (Rust)
+- Ad-hoc runner: cargo binstall -y (Rust) — per the tech-stack table
+- Build system: cargo + just (via devbox)
+- Test runner: cargo test (via `just test` or `devbox run -- just test`)
+- Linter: clippy (via `just lint` or `devbox run -- just lint`)
+- Typecheck: cargo check (via `just typecheck` or `devbox run -- just typecheck`)
+- Container runtime: N/A
+- CI/CD: none configured
+
+System tools run via: devbox run -- <command>
+Never use: npm, npx, yarn, jest, biome, pip install, brew install (add to devbox.json instead)
+
+## Key Commands
+
+- Build: `devbox run -- just build` (cargo build --release)
+- Test: `devbox run -- just test` (cargo test)
+- Lint: `devbox run -- just lint` (cargo clippy -- -D warnings)
+- Typecheck: `devbox run -- just typecheck` (cargo check)
+
+## Project Structure
+
+- Binary: `src/main.rs` → `src/cli.rs` (clap-based CLI)
+- Core modules: `src/ticket.rs` (ticket model + markdown parsing), `src/web.rs` (warp web server), `src/tui.rs` (ratatui TUI), `src/utils.rs`
+- Tests: inline `#[cfg(test)]` modules + integration tests via `assert_cmd`/`predicates` in dev-dependencies
+- Config: `Cargo.toml` for dependencies, `devbox.json` for environment, `justfile` for task runner
+
+## Dependencies to Add (per PRD)
+
+```toml
+rusqlite = { version = "0.40", features = ["bundled"] }
+notify = "6"
+reqwest = { version = "0.12", features = ["json"] }
+```

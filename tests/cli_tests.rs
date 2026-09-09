@@ -1089,3 +1089,3783 @@ fn test_git_aware_movement_multiple_status_changes() {
             "Found duplicate files after {}: {:?}", status, all_files);
     }
 }
+
+#[test]
+fn test_db_module_does_not_break_existing_commands() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success();
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio CRUD integration tests (story 02-001)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_portfolio_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .arg("--description")
+        .arg("My personal work")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created portfolio: personal"))
+        .stdout(predicate::str::contains("curated"));
+
+    assert!(db_path.exists());
+}
+
+#[test]
+fn test_portfolio_create_without_description() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("oss")
+        .arg("Open Source")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created portfolio: oss"));
+}
+
+#[test]
+fn test_portfolio_create_duplicate_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    // Create duplicate
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_portfolio_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create two portfolios
+    for (id, name) in [("personal", "Personal"), ("business", "Business")] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("create")
+            .arg(id)
+            .arg(name)
+            .assert()
+            .success();
+    }
+
+    // List
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("Personal"))
+        .stdout(predicate::str::contains("business"))
+        .stdout(predicate::str::contains("Business"));
+}
+
+#[test]
+fn test_portfolio_list_excludes_dissolved() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create two portfolios
+    for (id, name) in [("personal", "Personal"), ("business", "Business")] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("create")
+            .arg(id)
+            .arg(name)
+            .assert()
+            .success();
+    }
+
+    // Dissolve one
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // List should not show dissolved
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("business"))
+        .stdout(predicate::str::contains("Business"))
+        .stdout(predicate::str::contains("personal").not());
+}
+
+#[test]
+fn test_portfolio_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .arg("--description")
+        .arg("My personal work")
+        .assert()
+        .success();
+
+    // Show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("show")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("Personal"))
+        .stdout(predicate::str::contains("My personal work"))
+        .stdout(predicate::str::contains("curated"));
+}
+
+#[test]
+fn test_portfolio_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("show")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_portfolio_dissolve() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    // Dissolve
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dissolved"));
+}
+
+#[test]
+fn test_portfolio_dissolve_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_portfolio_dissolve_already_dissolved() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create and dissolve
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Dissolve again — should be idempotent or warn
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_portfolio_auto_creates_db() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    assert!(!db_path.exists());
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    assert!(db_path.exists());
+}
+
+// ---------------------------------------------------------------------------
+// Project registration integration tests (story 02-002)
+// ---------------------------------------------------------------------------
+
+use std::process::Command as StdCommand;
+
+/// Helper: create a temp git repo with a remote and a `.tickets` directory.
+fn create_temp_git_repo() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    let repo_path = temp.path();
+
+    StdCommand::new("git")
+        .arg("init")
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    StdCommand::new("git")
+        .arg("remote")
+        .arg("add")
+        .arg("origin")
+        .arg("https://github.com/levonk/test-repo.git")
+        .current_dir(repo_path)
+        .output()
+        .unwrap();
+
+    // Create .tickets dir
+    std::fs::create_dir_all(repo_path.join(".tickets")).unwrap();
+
+    temp
+}
+
+/// Helper: create a portfolio in the DB.
+fn create_portfolio(db_path: &std::path::Path, id: &str, name: &str) {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg(id)
+        .arg(name)
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_project_register() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Registered project"))
+        .stdout(predicate::str::contains("seeded"))
+        .stdout(predicate::str::contains("levonk/test-repo"));
+}
+
+#[test]
+fn test_project_register_with_custom_name() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .arg("--name")
+        .arg("custom-project-name")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("custom-project-name"));
+}
+
+#[test]
+fn test_project_register_nonexistent_portfolio() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_register_nonexistent_path() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg("/nonexistent/path/to/repo")
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("does not exist")));
+}
+
+#[test]
+fn test_project_register_duplicate() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // First registration
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Duplicate registration
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already registered"));
+}
+
+#[test]
+fn test_project_list() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register a project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // List
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("seeded"));
+}
+
+#[test]
+fn test_project_list_filtered_by_portfolio() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create two portfolios
+    create_portfolio(&db_path, "personal", "Personal");
+    create_portfolio(&db_path, "business", "Business");
+
+    // Register a project in each
+    let repo1 = create_temp_git_repo();
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo1.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let repo2 = create_temp_git_repo();
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo2.path())
+        .arg("--portfolio")
+        .arg("business")
+        .assert()
+        .success();
+
+    // List filtered to personal — should contain personal, not business
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("business").not());
+}
+
+#[test]
+fn test_project_unregister() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path().to_str().unwrap().to_string();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Unregister
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("unregister")
+        .arg(&repo_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unregistered"));
+
+    // List should be empty
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No projects").or(predicate::str::contains("0 projects")));
+}
+
+#[test]
+fn test_project_unregister_not_found() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("unregister")
+        .arg("/nonexistent/path")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_auto_creates_db() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    // Create portfolio first (this creates the DB)
+    create_portfolio(&db_path, "personal", "Personal");
+
+    assert!(db_path.exists());
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_project_register_non_git_repo() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create a plain directory (not a git repo)
+    let repo_temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(repo_temp.path().join(".tickets")).unwrap();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Should still register, but without GitHub info
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(none)").or(predicate::str::contains("Registered")));
+}
+
+// ---------------------------------------------------------------------------
+// App CRUD integration tests (story 03-001)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio and register a project (which auto-creates a
+/// default app). Returns the temp dirs so they stay alive for the test.
+fn setup_project_with_default_app() -> (TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Keep repo_temp alive by leaking it — the TempDir will be cleaned up when
+    // the process exits. This is acceptable for tests.
+    std::mem::forget(repo_temp);
+
+    (db_temp, db_path)
+}
+
+#[test]
+fn test_app_create() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app")
+        .arg("create")
+        .arg("api")
+        .arg("--project=1")
+        .arg("--description=REST API")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created app"));
+}
+
+#[test]
+fn test_app_create_duplicate_fails() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Create first app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .success();
+
+    // Create duplicate
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_app_list() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Create an additional app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .success();
+
+    // List should show both default and api
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"))
+        .stdout(predicate::str::contains("api"));
+}
+
+#[test]
+fn test_app_list_all_projects() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // List without --project should show all apps
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+}
+
+#[test]
+fn test_app_sunset() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Sunset the default app (id=1)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("sunset").arg("1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sunset"));
+}
+
+#[test]
+fn test_app_sunset_not_found() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("sunset").arg("999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_app_create_invalid_state() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1").arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid state"));
+}
+
+#[test]
+fn test_app_create_with_valid_state() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("web").arg("--project=1").arg("--state=sketched")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created app"));
+
+    // Verify state is shown in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sketched"));
+}
+
+#[test]
+fn test_app_create_nonexistent_project() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_register_creates_default_app() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register a project — should auto-create a default app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project").arg("register").arg(repo_temp.path()).arg("--portfolio").arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+
+    // Verify default app exists via app list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+
+    // Keep repo_temp alive
+    std::mem::forget(repo_temp);
+}
+
+// ---------------------------------------------------------------------------
+// Requirement CRUD integration tests (story 03-002)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio in the DB (reuses the existing helper but
+/// scoped locally for clarity in requirement tests).
+fn setup_portfolio(db_path: &std::path::Path, id: &str, name: &str) {
+    create_portfolio(db_path, id, name);
+}
+
+#[test]
+fn test_requirement_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .arg("--description=Must support multi-account sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created requirement"))
+        .stdout(predicate::str::contains("req-"));
+}
+
+#[test]
+fn test_requirement_create_invalid_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Test")
+        .arg("--portfolio=personal")
+        .arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid requirement state"));
+}
+
+#[test]
+fn test_requirement_create_nonexistent_portfolio() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Test")
+        .arg("--portfolio=nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create two requirements
+    for title in ["Multi-account Sync", "Offline-first"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("requirement")
+            .arg("create")
+            .arg(title)
+            .arg("--portfolio=personal")
+            .assert()
+            .success();
+    }
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("Offline-first"));
+}
+
+#[test]
+fn test_requirement_list_by_portfolio() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+    setup_portfolio(&db_path, "business", "Business");
+
+    // Create a requirement in each portfolio
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Enterprise SSO")
+        .arg("--portfolio=business")
+        .assert()
+        .success();
+
+    // List filtered to personal — should contain personal, not business
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list").arg("--portfolio=personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("Enterprise SSO").not());
+}
+
+#[test]
+fn test_requirement_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No requirements found"));
+}
+
+#[test]
+fn test_requirement_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .arg("--description=Must support multi-account sync")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    // Extract the requirement ID from the output
+    let req_id = stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Show the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync"))
+        .stdout(predicate::str::contains("proposed"))
+        .stdout(predicate::str::contains("Must support multi-account sync"));
+}
+
+#[test]
+fn test_requirement_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg("req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_supersede() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Multi-account Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let req_id = stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Supersede the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("supersede").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("superseded"));
+
+    // Verify state is superseded via show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("show").arg(req_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("superseded"));
+}
+
+#[test]
+fn test_requirement_supersede_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("supersede").arg("req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_requirement_id_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("create").arg("Test").arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+    // The output should contain a req- prefixed ID
+    assert!(stdout.contains("req-"));
+}
+
+#[test]
+fn test_requirement_create_with_target_date_and_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Offline-first")
+        .arg("--portfolio=personal")
+        .arg("--state=planned")
+        .arg("--target-date=2026-12-01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created requirement"));
+
+    // Verify the state and target date appear in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("requirement").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("planned"))
+        .stdout(predicate::str::contains("2026-12-01"));
+}
+
+// ---------------------------------------------------------------------------
+// Story CRUD integration tests (story 03-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a requirement under a portfolio and return its ID.
+fn setup_requirement(db_path: &std::path::Path, portfolio: &str, title: &str) -> String {
+    setup_portfolio(db_path, portfolio, "Portfolio");
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg(title)
+        .arg(format!("--portfolio={}", portfolio))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Helper: create a story and return its ID.
+fn setup_story(db_path: &std::path::Path, title: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg(title)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn test_story_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .arg("--description=Cross-project portfolio management")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"))
+        .stdout(predicate::str::contains("story-"));
+}
+
+#[test]
+fn test_story_create_no_links() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Investigate WASM")
+        .arg("--description=Explore WebAssembly")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"));
+}
+
+#[test]
+fn test_story_create_invalid_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid story state"));
+}
+
+#[test]
+fn test_story_create_nonexistent_requirement() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--requirement=req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_create_nonexistent_app() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--app=999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_story(&db_path, "Portfolio Layer");
+    setup_story(&db_path, "Investigate WASM");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("Investigate WASM"));
+}
+
+#[test]
+fn test_story_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No stories found"));
+}
+
+#[test]
+fn test_story_list_by_requirement() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    // Create a story linked to the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success();
+
+    // Create a story without a requirement
+    setup_story(&db_path, "Standalone Story");
+
+    // List filtered by requirement — should contain Portfolio Layer, not Standalone
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("Standalone Story").not());
+}
+
+#[test]
+fn test_story_list_by_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story with default state (pitched)
+    setup_story(&db_path, "Default Story");
+
+    // Create a story with building state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Building Story")
+        .arg("--state=building")
+        .assert()
+        .success();
+
+    // List filtered by state=building
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .arg("--state=building")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Building Story"))
+        .stdout(predicate::str::contains("Default Story").not());
+}
+
+#[test]
+fn test_story_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    // Create a story with full details
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .arg("--description=Cross-project portfolio management")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let story_id = stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Show the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg(story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("pitched"))
+        .stdout(predicate::str::contains("Cross-project portfolio management"));
+}
+
+#[test]
+fn test_story_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg("story-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_ship() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+
+    // Ship the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("ship")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shipped"));
+
+    // Verify state is shipped via show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shipped"));
+}
+
+#[test]
+fn test_story_ship_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("ship")
+        .arg("story-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_id_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("story-"));
+}
+
+#[test]
+fn test_story_create_with_target_date_and_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Offline-first")
+        .arg("--state=queued")
+        .arg("--target-date=2026-12-01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"));
+
+    // Verify the state appears in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued"));
+}
+
+// ---------------------------------------------------------------------------
+// Markdown sync integration tests (story 03-004)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio and register a project whose tickets_dir
+/// points to a temp repo with markdown ticket files. Returns the temp dirs
+/// (DB temp and repo temp) and the db_path so they stay alive for the test.
+fn setup_sync_project(
+    ticket_files: &[(&str, &str)], // (filename, content)
+) -> (TempDir, TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+
+    // Create the open status directory
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write ticket files
+    for (filename, content) in ticket_files {
+        fs::write(tickets_dir.join("open").join(filename), content).unwrap();
+    }
+
+    // Create portfolio
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register the project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path)
+}
+
+const TICKET_CONTENT: &str = "---\nid: ja-test001\ntitle: Test Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Test Ticket\n";
+
+#[test]
+fn test_sync_basic() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Sync complete"))
+        .stdout(predicate::str::contains("1 task"));
+}
+
+#[test]
+fn test_sync_idempotent() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Second sync — should report 0 indexed
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 tasks indexed"));
+}
+
+#[test]
+fn test_sync_detects_changes() {
+    let (_db_temp, repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Modify the file
+    let modified = "---\nid: ja-test001\ntitle: Updated Title\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Updated Title\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-test001.md"),
+        modified,
+    )
+    .unwrap();
+
+    // Second sync — should report 1 updated
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 updated"));
+}
+
+#[test]
+fn test_sync_removes_deleted() {
+    let (_db_temp, repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Delete the file
+    fs::remove_file(
+        repo_temp.path().join(".tickets").join("open").join("ja-test001.md"),
+    )
+    .unwrap();
+
+    // Second sync — should report 1 removed
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 removed"));
+}
+
+#[test]
+fn test_sync_status() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync once to populate sync_state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Check status
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Last sync"))
+        .stdout(predicate::str::contains("Projects:"))
+        .stdout(predicate::str::contains("Tasks:"));
+}
+
+#[test]
+fn test_sync_github_no_projects() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No projects with GitHub info"));
+}
+
+#[test]
+fn test_sync_github_status_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .arg("--status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GitHub Sync Status"))
+        .stdout(predicate::str::contains("Last sync: (never)"));
+}
+
+#[test]
+fn test_sync_github_dry_run() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First, run a normal sync to index the task into the DB.
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Set GitHub info on the project via SQL (project name is derived from
+    // the temp dir, so update all projects).
+    let db = tkr_test_db::open_db(&db_path);
+    db.execute(
+        "UPDATE projects SET github_owner = 'owner', github_repo = 'repo'",
+        [],
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Syncing 1 project with GitHub"))
+        .stdout(predicate::str::contains("Pushed 1 task"));
+}
+
+#[test]
+fn test_sync_invalid_markdown_skipped() {
+    let valid = "---\nid: ja-valid01\ntitle: Valid\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Valid\n";
+    let invalid = "This is not valid YAML\n";
+
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-valid01.md", valid), ("broken.md", invalid)]);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 task"))
+        .stdout(predicate::str::contains("skipped"));
+}
+
+// ---------------------------------------------------------------------------
+// Task-story linking integration tests (story 04-001)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a ticket in a temp tickets dir and return its ID.
+fn setup_ticket(tickets_dir: &std::path::Path, title: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", tickets_dir)
+        .arg("create")
+        .arg(title)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).unwrap().trim().to_string()
+}
+
+#[test]
+fn test_story_link_writes_story_to_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story in the DB
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+
+    // Create a task
+    let task_id = setup_ticket(&tickets_dir, "Link test task");
+
+    // Link the task to the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"))
+        .stdout(predicate::str::contains(&story_id));
+
+    // Assert the markdown file contains the story field
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains(&format!("story: {}", story_id)));
+}
+
+#[test]
+fn test_story_unlink_removes_story_from_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story and a task, then link them
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+    let task_id = setup_ticket(&tickets_dir, "Unlink test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success();
+
+    // Verify the story field is present
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("story:"));
+
+    // Unlink
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("unlink")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cleared story link"));
+
+    // Assert the story field is gone from the markdown
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(!content.contains("story:"));
+}
+
+#[test]
+fn test_story_link_nonexistent_story_fails() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a task (no story created in DB)
+    let task_id = setup_ticket(&tickets_dir, "Missing story test task");
+
+    // Capture the markdown content before the failed link
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_before = fs::read_to_string(&ticket_files[0]).unwrap();
+
+    // Attempt to link to a non-existent story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg("story-doesnotexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+
+    // Assert the markdown is unchanged
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_after = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert_eq!(content_before, content_after);
+}
+
+#[test]
+fn test_sync_populates_story_id_from_markdown() {
+    // Set up a sync project with a ticket (story field added after)
+    let ticket_no_story = "---\nid: ja-story01\ntitle: Story Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Story Task\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-story01.md", ticket_no_story)]);
+
+    // Create a story in the same DB that setup_sync_project uses
+    let story_id = setup_story(&db_path, "Sync Story");
+
+    // Rewrite the ticket with the story field
+    let ticket_with_story = format!(
+        "---\nid: ja-story01\ntitle: Story Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\n---\n\n# Story Task\n",
+        story_id
+    );
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-story01.md"),
+        &ticket_with_story,
+    )
+    .unwrap();
+
+    // Run sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Query the DB to verify story_id was populated
+    let db = tkr_test_db::open_db(&db_path);
+    let stored_story_id: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-story01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_story_id, Some(story_id));
+}
+
+#[test]
+fn test_sync_unlink_clears_story_id() {
+    // Set up a sync project with a ticket (no story yet)
+    let ticket_no_story = "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Unlink Task\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-unlink01.md", ticket_no_story)]);
+
+    // Create a story in the same DB
+    let story_id = setup_story(&db_path, "Unlink Sync Story");
+
+    // Write the ticket with the story field
+    let ticket_with_story = format!(
+        "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\n---\n\n# Unlink Task\n",
+        story_id
+    );
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-unlink01.md"),
+        &ticket_with_story,
+    )
+    .unwrap();
+
+    // First sync — populates story_id
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify story_id is set
+    let db = tkr_test_db::open_db(&db_path);
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-unlink01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, Some(story_id.clone()));
+
+    // Remove the story field from the markdown
+    let ticket_without_story = "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Unlink Task\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-unlink01.md"),
+        ticket_without_story,
+    )
+    .unwrap();
+
+    // Second sync — should clear story_id (set to NULL)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-unlink01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, None);
+}
+
+#[test]
+fn test_story_field_backward_compat() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write a ticket with no story field (old format)
+    let content = "---\nid: ja-old01\ntitle: Old Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Old Ticket\n";
+    fs::write(tickets_dir.join("open").join("ja-old01.md"), content).unwrap();
+
+    // List should still work (no parse error)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-old01"));
+
+    // Show should still work
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg("ja-old01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Old Ticket"));
+}
+
+#[test]
+fn test_story_field_round_trip() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story
+    let story_id = setup_story(&db_path, "Round Trip Story");
+
+    // Create a task
+    let task_id = setup_ticket(&tickets_dir, "Round trip task");
+
+    // Link it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success();
+
+    // Show the ticket — should contain the story field
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains(&format!("story: {}", story_id)));
+
+    // Unlink it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("unlink")
+        .arg(&task_id)
+        .assert()
+        .success();
+
+    // Show again — story field should be gone
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(!stdout.contains("story:"));
+}
+
+/// Helper module to open a read-only DB connection for test assertions.
+mod tkr_test_db {
+    use rusqlite::Connection;
+    use std::path::Path;
+
+    pub fn open_db(path: &Path) -> Connection {
+        Connection::open(path).unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tag integration tests (story 04-002)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tag_add_writes_tags_to_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag add test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added tag"))
+        .stdout(predicate::str::contains("security"));
+
+    // Assert the markdown file contains the tags field
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("tags:"));
+    assert!(content.contains("security"));
+}
+
+#[test]
+fn test_tag_add_normalizes_to_lowercase() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag normalize test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("Backend")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"));
+
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("backend"));
+    assert!(!content.contains("Backend"));
+}
+
+#[test]
+fn test_tag_add_idempotent() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag idempotent test task");
+
+    // First add
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added tag"));
+
+    // Second add — should say "already on"
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already on"));
+
+    // Assert only one tag in the markdown
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    let count = content.matches("security").count();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_tag_remove_removes_from_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag remove test task");
+
+    // Add a tag first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success();
+
+    // Remove it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("remove")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed tag"));
+
+    // Assert the tags field is gone (skipped when empty)
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(!content.contains("tags:"));
+}
+
+#[test]
+fn test_tag_remove_missing_is_noop() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag remove missing test task");
+
+    // Capture content before
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_before = fs::read_to_string(&ticket_files[0]).unwrap();
+
+    // Remove a tag that doesn't exist
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("remove")
+        .arg(&task_id)
+        .arg("nope")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+
+    // Assert markdown is unchanged
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_after = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert_eq!(content_before, content_after);
+}
+
+#[test]
+fn test_tag_add_empty_rejected() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag empty reject test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("   ")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty"));
+}
+
+#[test]
+fn test_tag_list_shows_all_tags() {
+    // Set up a sync project with two tagged tickets
+    let ticket_a = "---\nid: ja-taga01\ntitle: Tag A\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag A\n";
+    let ticket_b = "---\nid: ja-tagb01\ntitle: Tag B\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [backend]\n---\n\n# Tag B\n";
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-taga01.md", ticket_a), ("ja-tagb01.md", ticket_b)]);
+
+    // Sync to populate tags + task_tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // List tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"))
+        .stdout(predicate::str::contains("security"));
+}
+
+#[test]
+fn test_tag_list_tasks_shows_task_ids() {
+    let ticket_a = "---\nid: ja-taga01\ntitle: Tag A\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag A\n";
+    let ticket_b = "---\nid: ja-tagb01\ntitle: Tag B\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [backend]\n---\n\n# Tag B\n";
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-taga01.md", ticket_a), ("ja-tagb01.md", ticket_b)]);
+
+    // Sync to populate tags + task_tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // List tags with tasks
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .arg("--tasks")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend: ja-tagb01"))
+        .stdout(predicate::str::contains("security: ja-taga01"));
+}
+
+#[test]
+fn test_tag_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tags found"));
+}
+
+#[test]
+fn test_sync_reconciles_tags_add() {
+    let ticket_no_tags = "---\nid: ja-tagc01\ntitle: Tag Sync\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Tag Sync\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-tagc01.md", ticket_no_tags)]);
+
+    // First sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Add a tag to the markdown
+    let ticket_with_tags = "---\nid: ja-tagc01\ntitle: Tag Sync\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag Sync\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-tagc01.md"),
+        ticket_with_tags,
+    )
+    .unwrap();
+
+    // Second sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify task_tags row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagc01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_sync_reconciles_tags_remove() {
+    let ticket_with_tags = "---\nid: ja-tagd01\ntitle: Tag Sync Remove\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag Sync Remove\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-tagd01.md", ticket_with_tags)]);
+
+    // First sync — populates the tag
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify the tag row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagd01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+
+    // Remove the tag from the markdown
+    let ticket_no_tags = "---\nid: ja-tagd01\ntitle: Tag Sync Remove\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Tag Sync Remove\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-tagd01.md"),
+        ticket_no_tags,
+    )
+    .unwrap();
+
+    // Second sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify the task_tags row is gone
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagd01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_tag_field_backward_compat() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write a ticket with no tags field (old format)
+    let content = "---\nid: ja-oldtag01\ntitle: Old Tag Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Old Tag Ticket\n";
+    fs::write(tickets_dir.join("open").join("ja-oldtag01.md"), content).unwrap();
+
+    // List should still work (no parse error)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-oldtag01"));
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio views integration tests (story 04-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a synced portfolio DB with two projects, a requirement, a
+/// story, tasks (some linked to the story, some not), and tags. Returns the
+/// temp dirs (kept alive) and the db_path.
+fn setup_view_data() -> (TempDir, TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Create a story in the DB first (so we can reference it in markdown)
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+    let story_id = setup_story_with_requirement(&db_path, "Portfolio Layer", &req_id);
+
+    // Ticket 1: linked to story, tagged security
+    let t1 = format!(
+        "---\nid: ja-v001\ntitle: Add rusqlite dependency\nstatus: in_progress\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\ntags: [security]\n---\n\n# Add rusqlite\n",
+        story_id
+    );
+    // Ticket 2: linked to story, tagged backend
+    let t2 = format!(
+        "---\nid: ja-v002\ntitle: Add notify watcher\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\ntags: [backend]\n---\n\n# Add notify\n",
+        story_id
+    );
+    // Ticket 3: unlinked, tagged security
+    let t3 = "---\nid: ja-v003\ntitle: Tidy docs\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tidy docs\n";
+
+    fs::write(tickets_dir.join("open").join("ja-v001.md"), t1).unwrap();
+    fs::write(tickets_dir.join("open").join("ja-v002.md"), t2).unwrap();
+    fs::write(tickets_dir.join("open").join("ja-v003.md"), t3).unwrap();
+
+    // Register the project and sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path)
+}
+
+/// Helper: create a story linked to a requirement and return its ID.
+fn setup_story_with_requirement(db_path: &std::path::Path, title: &str, req_id: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg(title)
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn test_portfolio_view_by_requirement() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-requirement")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync (2)"))
+        .stdout(predicate::str::contains("ja-v001 - Add rusqlite dependency (in_progress)"))
+        .stdout(predicate::str::contains("ja-v002 - Add notify watcher (open)"))
+        .stdout(predicate::str::contains("Showing 2 tasks across 1 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_story() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer (2)"))
+        .stdout(predicate::str::contains("(none) (1)"))
+        .stdout(predicate::str::contains("ja-v003 - Tidy docs (open)"))
+        .stdout(predicate::str::contains("Showing 3 tasks across 2 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_tag_filtered() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-tag=security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-v001 - Add rusqlite dependency (in_progress)"))
+        .stdout(predicate::str::contains("ja-v003 - Tidy docs (open)"))
+        .stdout(predicate::str::contains("Showing 2 tasks across 1 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_tag_summary() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    // --by-tag with no value lists all tags with counts
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-tag")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("security"))
+        .stdout(predicate::str::contains("backend"));
+}
+
+#[test]
+fn test_portfolio_view_by_project() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-project")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Showing 3 tasks across 1 groups"))
+        .stdout(predicate::str::contains("ja-v001"))
+        .stdout(predicate::str::contains("ja-v002"))
+        .stdout(predicate::str::contains("ja-v003"));
+}
+
+#[test]
+fn test_portfolio_view_empty_group() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create a requirement with no stories/tasks
+    setup_requirement(&db_path, "personal", "Empty Requirement");
+
+    // Also create a project with a task (so the DB isn't empty)
+    let repo_temp = TempDir::new().unwrap();
+    let tickets_dir = repo_temp.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+    let ticket = "---\nid: ja-eg01\ntitle: Lone task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Lone\n";
+    fs::write(tickets_dir.join("open").join("ja-eg01.md"), ticket).unwrap();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // The requirement should appear with count 0 and an empty marker
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-requirement")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Empty Requirement (0)"))
+        .stdout(predicate::str::contains("(empty)"));
+}
+
+#[test]
+fn test_portfolio_view_no_flag_errors() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("specify one of"));
+}
+
+#[test]
+fn test_portfolio_view_multiple_flags_errors() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .arg("--by-project")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exactly one grouping flag"));
+}
+
+#[test]
+fn test_portfolio_view_json_output() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    // Should be valid JSON with expected keys
+    assert!(stdout.contains("\"version\""));
+    assert!(stdout.contains("\"groups\""));
+    assert!(stdout.contains("\"group\""));
+    assert!(stdout.contains("\"count\""));
+    assert!(stdout.contains("\"total_tasks\""));
+    assert!(stdout.contains("\"Portfolio Layer\""));
+    // Verify it parses as JSON
+    serde_json::from_str::<serde_json::Value>(&stdout).unwrap();
+}
+
+#[test]
+fn test_portfolio_view_empty_db_message() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // No projects, no tasks
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-project")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tasks found"));
+}
+
+#[test]
+fn test_portfolio_view_readonly() {
+    let (_db_temp, repo_temp, db_path) = setup_view_data();
+
+    // Capture all markdown file contents before running the view
+    let tickets_dir = repo_temp.path().join(".tickets");
+    let open_dir = tickets_dir.join("open");
+    let mut before: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for entry in fs::read_dir(&open_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().map(|e| e == "md").unwrap_or(false) {
+            let content = fs::read_to_string(&path).unwrap();
+            before.push((path.clone(), content));
+        }
+    }
+
+    // Run all four views
+    for flag in &["--by-requirement", "--by-story", "--by-project", "--by-tag"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("view")
+            .arg(flag)
+            .assert()
+            .success();
+    }
+
+    // Verify no markdown files changed
+    for (path, content) in &before {
+        let after = fs::read_to_string(path).unwrap();
+        assert_eq!(&after, content, "markdown file {} was modified by view", path.display());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AI Task CRUD integration tests (story 04-004)
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a synced project with a parent task so AI Task commands
+/// have a valid `task_id` to link against. Returns the db_path and the
+/// repo TempDir (kept alive so the markdown files remain on disk).
+fn setup_synced_task() -> (TempDir, std::path::PathBuf) {
+    let (db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync so the `tasks` row exists
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, db_path)
+}
+
+/// Extract the `ai-` prefixed ID from a `create` command's stdout.
+fn extract_ai_task_id(stdout: &str) -> String {
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("ai-"),
+        "expected an ai- prefixed ID, got: {}",
+        trimmed
+    );
+    trimmed.to_string()
+}
+
+#[test]
+fn test_ai_task_create() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+    assert!(id.starts_with("ai-"));
+
+    // Verify the row exists in the DB with state `identified`
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: identified"))
+        .stdout(predicate::str::contains("title: Write migration tests"))
+        .stdout(predicate::str::contains("task_id: ja-test001"));
+}
+
+#[test]
+fn test_ai_task_create_with_agent_profile() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Generate schema docs")
+        .arg("--agent-profile")
+        .arg("subagent_general")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent_profile: subagent_general"));
+}
+
+#[test]
+fn test_ai_task_create_missing_parent() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-nope")
+        .arg("Orphan")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+
+    // Verify no row was created
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No AI Tasks found"));
+}
+
+#[test]
+fn test_ai_task_list() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create two AI Tasks
+    for title in &["Write migration tests", "Generate schema docs"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("ai-task")
+            .arg("create")
+            .arg("ja-test001")
+            .arg(title)
+            .assert()
+            .success();
+    }
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Write migration tests"))
+        .stdout(predicate::str::contains("Generate schema docs"))
+        .stdout(predicate::str::contains("identified"))
+        .stdout(predicate::str::contains("ja-test001"));
+}
+
+#[test]
+fn test_ai_task_list_filter_by_task() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create AI Tasks under ja-test001
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Task A")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id_a = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // List filtered by the parent task
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--task")
+        .arg("ja-test001")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task A"))
+        .stdout(predicate::str::contains(&id_a));
+
+    // List filtered by a non-existent parent should be empty
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--task")
+        .arg("ja-nope")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No AI Tasks found"));
+}
+
+#[test]
+fn test_ai_task_list_filter_by_state() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create an AI Task
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Running task")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Transition to running
+    let mut upd = Command::cargo_bin("tkr").unwrap();
+    upd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("running")
+        .assert()
+        .success();
+
+    // List filtered by state=running should include it
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--state")
+        .arg("running")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Running task"))
+        .stdout(predicate::str::contains("running"));
+
+    // List filtered by state=identified should NOT include it
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--state")
+        .arg("identified")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Running task").not());
+}
+
+#[test]
+fn test_ai_task_show() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("id: {}", id)))
+        .stdout(predicate::str::contains("title: Write migration tests"))
+        .stdout(predicate::str::contains("state: identified"))
+        .stdout(predicate::str::contains("agent_profile: (none)"))
+        .stdout(predicate::str::contains("task_id: ja-test001"))
+        .stdout(predicate::str::contains("created:"))
+        .stdout(predicate::str::contains("completed: (none)"))
+        .stdout(predicate::str::contains("result_summary: (none)"));
+}
+
+#[test]
+fn test_ai_task_update_state_transitions() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // identified -> dispatched
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("dispatched")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"))
+        .stdout(predicate::str::contains("dispatched"));
+
+    // Verify persistence
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: dispatched"));
+
+    // dispatched -> running
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("running")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: running"));
+}
+
+#[test]
+fn test_ai_task_update_state_returned_stamps_completed() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Transition to returned with a summary
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("returned")
+        .arg("--summary")
+        .arg("12 tests added, all green")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("returned"))
+        .stdout(predicate::str::contains("completed:"));
+
+    // Verify completed and result_summary persisted
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: returned"))
+        .stdout(predicate::str::contains("12 tests added, all green"))
+        // completed should no longer be "(none)"
+        .stdout(predicate::str::contains("completed: (none)").not());
+}
+
+#[test]
+fn test_ai_task_update_state_invalid() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("closed")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid AI Task state"))
+        .stderr(predicate::str::contains("identified"))
+        .stderr(predicate::str::contains("dispatched"))
+        .stderr(predicate::str::contains("running"))
+        .stderr(predicate::str::contains("returned"));
+}
+
+#[test]
+fn test_ai_task_show_not_found() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg("ai-nope")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_ai_task_update_state_not_found() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg("ai-nope")
+        .arg("dispatched")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_ai_task_commands_do_not_modify_markdown() {
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Snapshot markdown content before AI Task operations
+    let ticket_path = repo_temp
+        .path()
+        .join(".tickets")
+        .join("open")
+        .join("ja-test001.md");
+    let before = fs::read_to_string(&ticket_path).unwrap();
+
+    // Create an AI Task
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // List, show, update-state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("dispatched")
+        .assert()
+        .success();
+
+    // Verify markdown was not modified
+    let after = fs::read_to_string(&ticket_path).unwrap();
+    assert_eq!(
+        before, after,
+        "markdown file was modified by an AI Task command"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Daemon lifecycle integration tests (story 05-001)
+// ---------------------------------------------------------------------------
+
+/// RAII guard that stops the daemon on drop so test processes don't leak.
+struct DaemonGuard {
+    daemon_dir: PathBuf,
+    db_path: PathBuf,
+}
+
+impl DaemonGuard {
+    fn new(daemon_dir: PathBuf, db_path: PathBuf) -> Self {
+        Self { daemon_dir, db_path }
+    }
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = Command::cargo_bin("tkr")
+            .unwrap()
+            .env("TKR_DAEMON_DIR", &self.daemon_dir)
+            .env("TKR_DB_PATH", &self.db_path)
+            .arg("daemon")
+            .arg("stop");
+    }
+}
+
+/// Set up a synced project for daemon tests: creates a portfolio, registers a
+/// repo with ticket files, and runs an initial sync. Returns the temp dirs
+/// (kept alive), the db_path, the daemon_dir, and the repo tickets dir.
+fn setup_daemon_project(
+    ticket_files: &[(&str, &str)],
+) -> (TempDir, TempDir, PathBuf, PathBuf, PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let daemon_temp = TempDir::new().unwrap();
+    let daemon_dir = daemon_temp.path().to_path_buf();
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    for (filename, content) in ticket_files {
+        fs::write(tickets_dir.join("open").join(filename), content).unwrap();
+    }
+
+    // Create portfolio
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register the project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .env("TKR_DAEMON_DIR", &daemon_dir)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Initial sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .env("TKR_DAEMON_DIR", &daemon_dir)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path, daemon_dir, tickets_dir)
+}
+
+/// Start the daemon with the given env vars and return the guard.
+fn start_daemon(daemon_dir: &PathBuf, db_path: &PathBuf) -> DaemonGuard {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", daemon_dir)
+        .env("TKR_DB_PATH", db_path)
+        .arg("daemon")
+        .arg("start")
+        .assert()
+        .success();
+
+    DaemonGuard::new(daemon_dir.clone(), db_path.clone())
+}
+
+#[test]
+fn test_daemon_start_creates_pid_file() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d001.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let pid_path = daemon_dir.join("daemon.pid");
+    assert!(pid_path.exists(), "PID file should exist after start");
+
+    let pid_str = fs::read_to_string(&pid_path).unwrap();
+    let pid: u32 = pid_str.trim().parse().unwrap();
+    assert!(pid > 0, "PID should be a positive number");
+}
+
+#[test]
+fn test_daemon_stop_removes_pid_file() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d002.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let pid_path = daemon_dir.join("daemon.pid");
+    assert!(pid_path.exists());
+
+    // Explicitly stop (the guard will also try on drop, which is fine)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("stop")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Daemon stopped"));
+
+    assert!(!pid_path.exists(), "PID file should be removed after stop");
+}
+
+#[test]
+fn test_daemon_status_running() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d003.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running"));
+}
+
+#[test]
+fn test_daemon_status_not_running() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let daemon_temp = TempDir::new().unwrap();
+    let daemon_dir = daemon_temp.path().to_path_buf();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn test_daemon_restart() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d004.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Capture original PID
+    let pid_path = daemon_dir.join("daemon.pid");
+    let old_pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+
+    // Restart
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("restart")
+        .assert()
+        .success();
+
+    // New PID should differ
+    let new_pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+    assert_ne!(old_pid, new_pid, "New PID should differ from old PID after restart");
+}
+
+#[test]
+fn test_daemon_file_change_syncs_to_sqlite() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d005.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Modify the ticket file
+    let modified = "---\nid: ja-d005\ntitle: Updated by Daemon\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Updated by Daemon\n";
+    fs::write(tickets_dir.join("open").join("ja-d005.md"), modified).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut synced = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let title: Option<String> = db
+            .query_row(
+                "SELECT title FROM tasks WHERE id = 'ja-d005'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if title == Some("Updated by Daemon".to_string()) {
+            synced = true;
+            break;
+        }
+    }
+    assert!(synced, "SQLite should reflect the updated title within 10 seconds");
+}
+
+#[test]
+fn test_daemon_file_create_inserts_row() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d006.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Create a new ticket file
+    let new_ticket = "---\nid: ja-dnew1\ntitle: New Ticket by Daemon\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# New Ticket by Daemon\n";
+    fs::write(tickets_dir.join("open").join("ja-dnew1.md"), new_ticket).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut inserted = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE id = 'ja-dnew1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if count > 0 {
+            inserted = true;
+            break;
+        }
+    }
+    assert!(inserted, "New row should appear in SQLite after file creation");
+}
+
+#[test]
+fn test_daemon_file_delete_removes_row() {
+    let ticket = "---\nid: ja-d007\ntitle: Delete Me\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Delete Me\n";
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d007.md", ticket)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Verify the row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE id = 'ja-d007'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "Task should exist before deletion");
+
+    // Delete the ticket file
+    fs::remove_file(tickets_dir.join("open").join("ja-d007.md")).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut removed = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE id = 'ja-d007'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if count == 0 {
+            removed = true;
+            break;
+        }
+    }
+    assert!(removed, "Row should be removed from SQLite after file deletion");
+}
+
+// ---------------------------------------------------------------------------
+// Priority ordering integration tests (story 06-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: seed a portfolio DB with a full hierarchy and tasks for priority
+/// tests. Creates portfolio -> project -> app -> requirement -> story -> tasks.
+fn seed_priority_db(db_path: &std::path::Path) -> String {
+    // Create portfolio
+    create_portfolio(db_path, "personal", "Personal");
+
+    // Register a project (needs a real repo path)
+    let repo_temp = create_temp_git_repo();
+    let repo_path = repo_temp.path().to_str().unwrap().to_string();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio=personal")
+        .assert()
+        .success();
+
+    // Create a requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg("Sync")
+        .arg("--portfolio=personal")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let req_stdout = String::from_utf8(output).unwrap();
+    let req_id = req_stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string();
+
+    // Create a story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg("--requirement")
+        .arg(&req_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let story_stdout = String::from_utf8(output).unwrap();
+    let story_id = story_stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string();
+
+    // Insert tasks directly into the DB (bypassing markdown/sync for simplicity)
+    let db = tkr_test_db::open_db(db_path);
+    let project_id: i64 = db
+        .query_row(
+            "SELECT id FROM projects WHERE name = 'test-repo'",
+            [],
+            |row| row.get(0),
+        )
+        .or_else(|_| {
+            db.query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))
+        })
+        .unwrap();
+    let app_id: i64 = db
+        .query_row(
+            "SELECT id FROM apps WHERE project_id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio1', ?1, ?2, ?3, 'Task One', 'open', 2, '/m1', '2026-01-01')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio2', ?1, ?2, ?3, 'Task Two', 'in_progress', 3, '/m2', '2026-01-02')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO tasks (id, project_id, app_id, story_id, title, state, priority, markdown_path, synced_at)
+         VALUES ('ja-prio3', ?1, ?2, ?3, 'Task Three', 'open', 1, '/m3', '2026-01-03')",
+        rusqlite::params![project_id, app_id, story_id],
+    )
+    .unwrap();
+
+    // Keep the repo_temp alive by leaking it (tests are short-lived)
+    std::mem::forget(repo_temp);
+
+    story_id
+}
+
+#[test]
+fn test_cli_priority_set() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio2")
+        .arg("0")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Moved"))
+        .stdout(predicate::str::contains("ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Set a specific ordering first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success();
+
+    // List the ordering
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("list")
+        .arg("story")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Priority ordering"))
+        .stdout(predicate::str::contains("ja-prio3"))
+        .stdout(predicate::str::contains("ja-prio1"))
+        .stdout(predicate::str::contains("ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_set_global() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("global")
+        .arg("global")
+        .arg("ja-prio1")
+        .arg("0")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Moved"));
+}
+
+#[test]
+fn test_cli_priority_invalid_scope_type() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("invalid_scope")
+        .arg("scope1")
+        .arg("ja-prio1")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid scope type"));
+}
+
+#[test]
+fn test_cli_priority_set_shifts_others() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Initial: auto-assign gives ja-prio1(0), ja-prio2(1), ja-prio3(2)
+    // Move ja-prio3 to position 0
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    // ja-prio3 should be at position 0
+    assert!(stdout.contains("0: ja-prio3"));
+    // ja-prio1 should be at position 1 (shifted down)
+    assert!(stdout.contains("1: ja-prio1"));
+    // ja-prio2 should be at position 2 (shifted down)
+    assert!(stdout.contains("2: ja-prio2"));
+}
+
+#[test]
+fn test_cli_priority_list_empty_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    seed_priority_db(&db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("list")
+        .arg("story")
+        .arg("nonexistent-story")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tasks"));
+}
+
+#[test]
+fn test_priority_persistence_across_restart() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+    let story_id = seed_priority_db(&db_path);
+
+    // Set priority ordering
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("priority")
+        .arg("set")
+        .arg("story")
+        .arg(&story_id)
+        .arg("ja-prio3")
+        .arg("0")
+        .assert()
+        .success();
+
+    // Verify the ordering persists by reading the DB directly
+    let db = tkr_test_db::open_db(&db_path);
+    let positions: Vec<(String, i64)> = db
+        .prepare(
+            "SELECT task_id, position FROM priority_order
+             WHERE scope_type = 'story' AND scope_id = ?1
+             ORDER BY position",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![&story_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(positions.len(), 3);
+    assert_eq!(positions[0].0, "ja-prio3");
+    assert_eq!(positions[0].1, 0);
+    assert_eq!(positions[1].1, 1);
+    assert_eq!(positions[2].1, 2);
+
+    // Verify ordering is gap-free
+    for (i, (_, pos)) in positions.iter().enumerate() {
+        assert_eq!(*pos, i as i64, "Position gap at index {}", i);
+    }
+}

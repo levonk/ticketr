@@ -109,7 +109,7 @@ pub async fn run_tui(manager: &mut TicketManager) -> Result<()> {
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
             if let Ok(_tickets) = manager_clone.list_tickets() {
-                let _ = tx_clone.send(AppEvent::Refresh);
+                drop(tx_clone.send(AppEvent::Refresh));
             }
         }
     });

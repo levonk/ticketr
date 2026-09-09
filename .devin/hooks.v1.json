@@ -1,0 +1,14 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "^(edit|write)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .devin/hooks/scan_secrets.py",
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

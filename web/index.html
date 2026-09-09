@@ -3,496 +3,195 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>tkr - Kanban Board</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/sortablejs@latest/Sortable.min.js"></script>
-    <style>
-        .sortable-ghost {
-            opacity: 0.4;
-            background: #f0f0f0;
-        }
-        .sortable-drag {
-            opacity: 0.9;
-        }
-        .ticket-card {
-            transition: all 0.2s ease;
-        }
-        .ticket-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }
-        .priority-1 { border-left: 4px solid #10b981; }
-        .priority-2 { border-left: 4px solid #3b82f6; }
-        .priority-3 { border-left: 4px solid #f59e0b; }
-        .priority-4 { border-left: 4px solid #f97316; }
-        .priority-5 { border-left: 4px solid #ef4444; }
-    </style>
+    <title>tkr Portfolio Board</title>
+    <link rel="stylesheet" href="/css/kanban.css">
 </head>
-<body class="bg-gray-50">
-    <div class="min-h-screen">
+<body>
+    <div id="app">
         <!-- Header -->
-        <header class="bg-white shadow-sm border-b">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="flex justify-between items-center h-16">
-                    <h1 class="text-2xl font-bold text-gray-900">tkr Kanban</h1>
-                    <div class="flex items-center space-x-4">
-                        <button onclick="createNewTicket()" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition">
-                            + New Ticket
-                        </button>
-                        <button onclick="refreshTickets()" class="text-gray-600 hover:text-gray-900">
-                            🔄 Refresh
-                        </button>
-                    </div>
-                </div>
-            </div>
+        <header id="header">
+            <h1>tkr Portfolio Board</h1>
+            <span id="totalCount">Showing 0 of 0 tasks</span>
+            <div id="activeFilters"></div>
+            <button id="toggleFilters" onclick="toggleFilterSidebar()">Filters</button>
         </header>
 
-        <!-- Filters -->
-        <div class="bg-white border-b">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-                <div class="flex flex-wrap gap-4 items-center">
-                    <!-- Project Filter -->
-                    <div class="relative">
-                        <select id="projectFilter" multiple class="hidden">
-                        </select>
-                        <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">Projects:</label>
-                            <div id="projectChips" class="flex flex-wrap gap-1">
-                            </div>
-                            <button onclick="toggleProjectDropdown()" class="text-blue-600 hover:text-blue-800 text-sm">
-                                + Add
-                            </button>
-                        </div>
-                        <div id="projectDropdown" class="hidden absolute z-10 mt-1 w-48 bg-white border rounded-md shadow-lg max-h-60 overflow-auto">
-                        </div>
-                    </div>
+        <!-- Main layout: filter sidebar + board -->
+        <div id="main">
+            <!-- Filter Sidebar -->
+            <aside id="filterSidebar">
+                <h2>Filters</h2>
 
-                    <!-- Status Filter -->
-                    <div class="flex items-center space-x-2">
-                        <label class="text-sm font-medium text-gray-700">Status:</label>
-                        <div id="statusFilters" class="flex gap-2">
-                        </div>
-                    </div>
-
-                    <!-- Sort -->
-                    <div class="flex items-center space-x-2">
-                        <label class="text-sm font-medium text-gray-700">Sort:</label>
-                        <select id="sortSelect" onchange="applyFilters()" class="border rounded px-2 py-1 text-sm">
-                            <option value="priority">Priority</option>
-                            <option value="created">Created</option>
-                            <option value="title">Title</option>
-                        </select>
-                    </div>
-
-                    <button onclick="clearFilters()" class="text-sm text-gray-600 hover:text-gray-900">
-                        Clear Filters
-                    </button>
+                <!-- Portfolio filter (single-select) -->
+                <div class="filter-section" id="filter-portfolio">
+                    <h3>Portfolio</h3>
+                    <ul class="filter-list" id="portfolioList"></ul>
                 </div>
-            </div>
+
+                <!-- Project filter (multi-select) -->
+                <div class="filter-section" id="filter-project">
+                    <h3>Project</h3>
+                    <ul class="filter-list" id="projectList"></ul>
+                </div>
+
+                <!-- App filter (single-select) -->
+                <div class="filter-section" id="filter-app">
+                    <h3>App</h3>
+                    <ul class="filter-list" id="appList"></ul>
+                </div>
+
+                <!-- Story filter (single-select) -->
+                <div class="filter-section" id="filter-story">
+                    <h3>Story</h3>
+                    <ul class="filter-list" id="storyList"></ul>
+                </div>
+
+                <!-- Requirement filter (single-select) -->
+                <div class="filter-section" id="filter-requirement">
+                    <h3>Requirement</h3>
+                    <ul class="filter-list" id="requirementList"></ul>
+                </div>
+
+                <!-- Tag filter (multi-select) -->
+                <div class="filter-section" id="filter-tag">
+                    <h3>Tag</h3>
+                    <ul class="filter-list" id="tagList"></ul>
+                </div>
+
+                <!-- State filter (show/hide columns) -->
+                <div class="filter-section" id="filter-state">
+                    <h3>State</h3>
+                    <ul class="filter-list" id="stateList"></ul>
+                </div>
+
+                <!-- Assignee filter (single-select) -->
+                <div class="filter-section" id="filter-assignee">
+                    <h3>Assignee</h3>
+                    <ul class="filter-list" id="assigneeList"></ul>
+                </div>
+
+                <button id="clearFilters" onclick="clearAllFilters()">Clear All Filters</button>
+            </aside>
+
+            <!-- Kanban Board -->
+            <main id="board">
+                <div class="column" id="col-logged" data-state="logged">
+                    <div class="column-header">
+                        <h2>Logged</h2>
+                        <span class="column-count" id="count-logged">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-logged"></div>
+                </div>
+                <div class="column" id="col-open" data-state="open">
+                    <div class="column-header">
+                        <h2>Open</h2>
+                        <span class="column-count" id="count-open">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-open"></div>
+                </div>
+                <div class="column" id="col-in_progress" data-state="in_progress">
+                    <div class="column-header">
+                        <h2>In Progress</h2>
+                        <span class="column-count" id="count-in_progress">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-in_progress"></div>
+                </div>
+                <div class="column" id="col-blocked" data-state="blocked">
+                    <div class="column-header">
+                        <h2>Blocked</h2>
+                        <span class="column-count" id="count-blocked">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-blocked"></div>
+                </div>
+                <div class="column" id="col-ready" data-state="ready">
+                    <div class="column-header">
+                        <h2>Ready</h2>
+                        <span class="column-count" id="count-ready">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-ready"></div>
+                </div>
+                <div class="column" id="col-closed" data-state="closed">
+                    <div class="column-header">
+                        <h2>Closed</h2>
+                        <span class="column-count" id="count-closed">0</span>
+                    </div>
+                    <div class="column-body" id="col-body-closed"></div>
+                </div>
+            </main>
         </div>
 
-        <!-- Kanban Board -->
-        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <!-- Open Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Open</h2>
-                        <span id="openCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="openColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- In Progress Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">In Progress</h2>
-                        <span id="progressCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="progressColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- Ready Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Ready</h2>
-                        <span id="readyCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="readyColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- Blocked Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Blocked</h2>
-                        <span id="blockedCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="blockedColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- Icebox Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Icebox</h2>
-                        <span id="iceboxCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="iceboxColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- Closed Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Closed</h2>
-                        <span id="closedCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="closedColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
-
-                <!-- Archive Column -->
-                <div class="bg-white rounded-lg shadow">
-                    <div class="px-4 py-3 border-b border-gray-200">
-                        <h2 class="font-semibold text-gray-900">Archive</h2>
-                        <span id="archiveCount" class="text-sm text-gray-500">0</span>
-                    </div>
-                    <div id="archiveColumn" class="p-4 space-y-3 min-h-[400px]">
-                    </div>
-                </div>
+        <!-- Card Detail Panel (slide-in from right) -->
+        <aside id="detailPanel" class="hidden">
+            <div id="detailHeader">
+                <h2>Task Detail</h2>
+                <button onclick="closeDetailPanel()">&times;</button>
             </div>
-        </main>
-    </div>
-
-    <!-- Edit Modal -->
-    <div id="editModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 w-full max-w-md">
-            <h3 class="text-lg font-semibold mb-4">Edit Ticket</h3>
-            <form id="editForm" onsubmit="saveTicket(event)">
-                <input type="hidden" id="editTicketId">
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Title</label>
-                    <input type="text" id="editTitle" required class="w-full border rounded px-3 py-2">
+            <form id="detailForm" onsubmit="saveTaskDetail(event)">
+                <input type="hidden" id="detailId">
+                <div class="detail-field">
+                    <label>ID</label>
+                    <span id="detailIdDisplay"></span>
                 </div>
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                    <select id="editStatus" class="w-full border rounded px-3 py-2">
+                <div class="detail-field">
+                    <label for="detailTitle">Title</label>
+                    <input type="text" id="detailTitle" required>
+                </div>
+                <div class="detail-field">
+                    <label for="detailState">State</label>
+                    <select id="detailState">
+                        <option value="logged">Logged</option>
                         <option value="open">Open</option>
                         <option value="in_progress">In Progress</option>
+                        <option value="blocked">Blocked</option>
+                        <option value="ready">Ready</option>
                         <option value="closed">Closed</option>
                     </select>
                 </div>
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Project</label>
-                    <input type="text" id="editProject" class="w-full border rounded px-3 py-2">
-                </div>
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Priority (1-5)</label>
-                    <select id="editPriority" class="w-full border rounded px-3 py-2">
-                        <option value="1">1 - Low</option>
-                        <option value="2">2 - Medium</option>
-                        <option value="3">3 - High</option>
-                        <option value="4">4 - Critical</option>
-                        <option value="5">5 - Blocker</option>
+                <div class="detail-field">
+                    <label for="detailStory">Story</label>
+                    <select id="detailStory">
+                        <option value="">(none)</option>
                     </select>
                 </div>
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Assignee</label>
-                    <input type="text" id="editAssignee" class="w-full border rounded px-3 py-2">
+                <div class="detail-field">
+                    <label for="detailTags">Tags (comma-separated)</label>
+                    <input type="text" id="detailTags" placeholder="tag1, tag2">
                 </div>
-
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                    <textarea id="editDescription" rows="3" class="w-full border rounded px-3 py-2"></textarea>
+                <div class="detail-field">
+                    <label for="detailAssignee">Assignee</label>
+                    <input type="text" id="detailAssignee">
                 </div>
-
-                <div class="flex justify-end space-x-2">
-                    <button type="button" onclick="closeEditModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">
-                        Cancel
-                    </button>
-                    <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
-                        Save
-                    </button>
+                <div class="detail-field">
+                    <label for="detailPriority">Priority</label>
+                    <input type="number" id="detailPriority" min="0">
+                </div>
+                <div class="detail-field">
+                    <label for="detailDeps">Dependencies (comma-separated)</label>
+                    <input type="text" id="detailDeps" placeholder="ja-xxxx">
+                </div>
+                <div class="detail-field">
+                    <label for="detailDescription">Description</label>
+                    <textarea id="detailDescription" rows="5"></textarea>
+                </div>
+                <div class="detail-actions">
+                    <button type="submit">Save</button>
+                    <button type="button" onclick="closeDetailPanel()">Cancel</button>
                 </div>
             </form>
+        </aside>
+
+        <!-- Toast notification for errors -->
+        <div id="toast" class="hidden"></div>
+
+        <!-- Cross-altitude tooltip -->
+        <div id="crossAltitudeTooltip" class="hidden">
+            Filter to a single story to reorder — cross-altitude prioritization is not meaningful.
         </div>
     </div>
 
-    <script>
-        let allTickets = [];
-        let filteredTickets = [];
-        let selectedProjects = new Set();
-        let selectedStatuses = new Set(['open', 'in_progress', 'closed']);
-
-        // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            initializeFilters();
-            refreshTickets();
-            setupSortable();
-        });
-
-        function setupSortable() {
-            ['openColumn', 'progressColumn', 'readyColumn', 'blockedColumn', 'iceboxColumn', 'closedColumn', 'archiveColumn'].forEach(columnId => {
-                new Sortable(document.getElementById(columnId), {
-                    group: 'kanban',
-                    animation: 150,
-                    ghostClass: 'sortable-ghost',
-                    dragClass: 'sortable-drag',
-                    onEnd: function(evt) {
-                        const ticketId = evt.item.dataset.ticketId;
-                        const newStatus = evt.to.id.replace('Column', '');
-                        updateTicketStatus(ticketId, newStatus);
-                    }
-                });
-            });
-        }
-
-        async function refreshTickets() {
-            try {
-                const response = await fetch('/api/tickets');
-                allTickets = await response.json();
-                applyFilters();
-            } catch (error) {
-                console.error('Failed to fetch tickets:', error);
-            }
-        }
-
-        function initializeFilters() {
-            // Status filters
-            const statusContainer = document.getElementById('statusFilters');
-            ['open', 'in_progress', 'ready', 'blocked', 'icebox', 'closed', 'archive'].forEach(status => {
-                const label = document.createElement('label');
-                label.className = 'flex items-center space-x-1 text-sm';
-                label.innerHTML = `
-                    <input type="checkbox" value="${status}" checked onchange="toggleStatusFilter('${status}')" class="rounded">
-                    <span>${status.replace('_', ' ')}</span>
-                `;
-                statusContainer.appendChild(label);
-            });
-        }
-
-        function toggleProjectDropdown() {
-            const dropdown = document.getElementById('projectDropdown');
-            dropdown.classList.toggle('hidden');
-
-            if (!dropdown.classList.contains('hidden')) {
-                const projects = [...new Set(allTickets.map(t => t.project).filter(Boolean))];
-                dropdown.innerHTML = projects.map(project => `
-                    <label class="block px-3 py-2 hover:bg-gray-100 cursor-pointer">
-                        <input type="checkbox" value="${project}" onchange="toggleProjectFilter('${project}')"
-                               ${selectedProjects.has(project) ? 'checked' : ''} class="mr-2">
-                        ${project}
-                    </label>
-                `).join('');
-            }
-        }
-
-        function toggleProjectFilter(project) {
-            if (selectedProjects.has(project)) {
-                selectedProjects.delete(project);
-            } else {
-                selectedProjects.add(project);
-            }
-            updateProjectChips();
-            applyFilters();
-        }
-
-        function toggleStatusFilter(status) {
-            if (selectedStatuses.has(status)) {
-                selectedStatuses.delete(status);
-            } else {
-                selectedStatuses.add(status);
-            }
-            applyFilters();
-        }
-
-        function updateProjectChips() {
-            const container = document.getElementById('projectChips');
-            container.innerHTML = Array.from(selectedProjects).map(project => `
-                <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">
-                    ${project}
-                    <button onclick="toggleProjectFilter('${project}')" class="ml-1 hover:text-blue-900">×</button>
-                </span>
-            `).join('');
-        }
-
-        function applyFilters() {
-            const sortBy = document.getElementById('sortSelect').value;
-
-            filteredTickets = allTickets.filter(ticket => {
-                const projectMatch = selectedProjects.size === 0 || selectedProjects.has(ticket.project);
-                const statusMatch = selectedStatuses.has(ticket.status);
-                return projectMatch && statusMatch;
-            });
-
-            // Sort
-            filteredTickets.sort((a, b) => {
-                switch (sortBy) {
-                    case 'priority':
-                        return b.priority - a.priority;
-                    case 'created':
-                        return new Date(b.created) - new Date(a.created);
-                    case 'title':
-                        return a.title.localeCompare(b.title);
-                    default:
-                        return 0;
-                }
-            });
-
-            renderBoard();
-        }
-
-        function renderBoard() {
-            // Clear all columns
-            ['openColumn', 'progressColumn', 'readyColumn', 'blockedColumn', 'iceboxColumn', 'closedColumn', 'archiveColumn'].forEach(columnId => {
-                document.getElementById(columnId).innerHTML = '';
-            });
-
-            // Count tickets per status
-            const counts = {
-                open: 0,
-                in_progress: 0,
-                ready: 0,
-                blocked: 0,
-                icebox: 0,
-                closed: 0,
-                archive: 0
-            };
-
-            filteredTickets.forEach(ticket => {
-                counts[ticket.status]++;
-                const card = createTicketCard(ticket);
-                const columnId = ticket.status.replace('_', '') + 'Column';
-                document.getElementById(columnId).appendChild(card);
-            });
-
-            // Update counts
-            document.getElementById('openCount').textContent = counts.open;
-            document.getElementById('progressCount').textContent = counts.in_progress;
-            document.getElementById('readyCount').textContent = counts.ready;
-            document.getElementById('blockedCount').textContent = counts.blocked;
-            document.getElementById('iceboxCount').textContent = counts.icebox;
-            document.getElementById('closedCount').textContent = counts.closed;
-            document.getElementById('archiveCount').textContent = counts.archive;
-        }
-
-        function createTicketCard(ticket) {
-            return `
-                <div class="ticket-card bg-white border rounded-lg p-3 cursor-pointer priority-${ticket.priority}"
-                     data-ticket-id="${ticket.id}" onclick="editTicket('${ticket.id}')">
-                    <div class="flex justify-between items-start mb-2">
-                        <h4 class="font-medium text-gray-900 text-sm">${ticket.title}</h4>
-                        <span class="text-xs text-gray-500">#${ticket.id}</span>
-                    </div>
-                    ${ticket.project ? `<div class="text-xs text-blue-600 mb-1">${ticket.project}</div>` : ''}
-                    ${ticket.assignee ? `<div class="text-xs text-gray-600 mb-1">👤 ${ticket.assignee}</div>` : ''}
-                    ${ticket.description ? `<div class="text-xs text-gray-700 line-clamp-2">${ticket.description}</div>` : ''}
-                    <div class="flex justify-between items-center mt-2">
-                        <span class="text-xs text-gray-500">${ticket.issue_type}</span>
-                        <span class="text-xs text-gray-400">${new Date(ticket.created).toLocaleDateString()}</span>
-                    </div>
-                </div>
-            `;
-        }
-
-        function editTicket(ticketId) {
-            const ticket = allTickets.find(t => t.id === ticketId);
-            if (!ticket) return;
-
-            document.getElementById('editTicketId').value = ticket.id;
-            document.getElementById('editTitle').value = ticket.title;
-            document.getElementById('editStatus').value = ticket.status;
-            document.getElementById('editProject').value = ticket.project || '';
-            document.getElementById('editPriority').value = ticket.priority;
-            document.getElementById('editAssignee').value = ticket.assignee || '';
-            document.getElementById('editDescription').value = ticket.description || '';
-
-            document.getElementById('editModal').classList.remove('hidden');
-        }
-
-        function closeEditModal() {
-            document.getElementById('editModal').classList.add('hidden');
-        }
-
-        async function saveTicket(event) {
-            event.preventDefault();
-
-            const ticketId = document.getElementById('editTicketId').value;
-            const update = {
-                title: document.getElementById('editTitle').value,
-                status: document.getElementById('editStatus').value,
-                project: document.getElementById('editProject').value || null,
-                priority: parseInt(document.getElementById('editPriority').value),
-                assignee: document.getElementById('editAssignee').value || null,
-                description: document.getElementById('editDescription').value || null
-            };
-
-            try {
-                const response = await fetch(`/api/tickets/${ticketId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(update)
-                });
-
-                if (response.ok) {
-                    closeEditModal();
-                    refreshTickets();
-                } else {
-                    alert('Failed to save ticket');
-                }
-            } catch (error) {
-                console.error('Error saving ticket:', error);
-                alert('Failed to save ticket');
-            }
-        }
-
-        async function updateTicketStatus(ticketId, newStatus) {
-            try {
-                const response = await fetch(`/api/tickets/${ticketId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: newStatus })
-                });
-
-                if (!response.ok) {
-                    console.error('Failed to update status');
-                    refreshTickets(); // Refresh to show correct state
-                }
-            } catch (error) {
-                console.error('Error updating status:', error);
-                refreshTickets();
-            }
-        }
-
-        function createNewTicket() {
-            // This would open a create modal - for now just show an alert
-            alert('Create ticket functionality would be implemented here');
-        }
-
-        function clearFilters() {
-            selectedProjects.clear();
-            selectedStatuses = new Set(['open', 'in_progress', 'closed']);
-            document.querySelectorAll('#statusFilters input[type="checkbox"]').forEach(cb => cb.checked = true);
-            updateProjectChips();
-            applyFilters();
-        }
-
-        // Close dropdowns when clicking outside
-        document.addEventListener('click', (e) => {
-            const dropdown = document.getElementById('projectDropdown');
-            const button = e.target.closest('button[onclick="toggleProjectDropdown()"]');
-            if (!button && !dropdown.contains(e.target)) {
-                dropdown.classList.add('hidden');
-            }
-        });
-    </script>
+    <script src="/js/kanban.js"></script>
+    <script src="/js/filters.js"></script>
+    <script src="/js/drag-drop.js"></script>
+    <script src="/js/detail-panel.js"></script>
 </body>
 </html>
