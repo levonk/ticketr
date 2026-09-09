@@ -1,4 +1,6 @@
 mod cli;
+#[allow(dead_code)]
+mod db;
 mod ticket;
 mod utils;
 mod web;

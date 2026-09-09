@@ -1089,3 +1089,15 @@ fn test_git_aware_movement_multiple_status_changes() {
             "Found duplicate files after {}: {:?}", status, all_files);
     }
 }
+
+#[test]
+fn test_db_module_does_not_break_existing_commands() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success();
+}
