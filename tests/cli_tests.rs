@@ -3722,3 +3722,517 @@ fn test_portfolio_view_readonly() {
         assert_eq!(&after, content, "markdown file {} was modified by view", path.display());
     }
 }
+
+// ---------------------------------------------------------------------------
+// AI Task CRUD integration tests (story 04-004)
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a synced project with a parent task so AI Task commands
+/// have a valid `task_id` to link against. Returns the db_path and the
+/// repo TempDir (kept alive so the markdown files remain on disk).
+fn setup_synced_task() -> (TempDir, std::path::PathBuf) {
+    let (db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync so the `tasks` row exists
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, db_path)
+}
+
+/// Extract the `ai-` prefixed ID from a `create` command's stdout.
+fn extract_ai_task_id(stdout: &str) -> String {
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("ai-"),
+        "expected an ai- prefixed ID, got: {}",
+        trimmed
+    );
+    trimmed.to_string()
+}
+
+#[test]
+fn test_ai_task_create() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+    assert!(id.starts_with("ai-"));
+
+    // Verify the row exists in the DB with state `identified`
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: identified"))
+        .stdout(predicate::str::contains("title: Write migration tests"))
+        .stdout(predicate::str::contains("task_id: ja-test001"));
+}
+
+#[test]
+fn test_ai_task_create_with_agent_profile() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Generate schema docs")
+        .arg("--agent-profile")
+        .arg("subagent_general")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent_profile: subagent_general"));
+}
+
+#[test]
+fn test_ai_task_create_missing_parent() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-nope")
+        .arg("Orphan")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+
+    // Verify no row was created
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No AI Tasks found"));
+}
+
+#[test]
+fn test_ai_task_list() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create two AI Tasks
+    for title in &["Write migration tests", "Generate schema docs"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("ai-task")
+            .arg("create")
+            .arg("ja-test001")
+            .arg(title)
+            .assert()
+            .success();
+    }
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Write migration tests"))
+        .stdout(predicate::str::contains("Generate schema docs"))
+        .stdout(predicate::str::contains("identified"))
+        .stdout(predicate::str::contains("ja-test001"));
+}
+
+#[test]
+fn test_ai_task_list_filter_by_task() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create AI Tasks under ja-test001
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Task A")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id_a = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // List filtered by the parent task
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--task")
+        .arg("ja-test001")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task A"))
+        .stdout(predicate::str::contains(&id_a));
+
+    // List filtered by a non-existent parent should be empty
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--task")
+        .arg("ja-nope")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No AI Tasks found"));
+}
+
+#[test]
+fn test_ai_task_list_filter_by_state() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    // Create an AI Task
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Running task")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Transition to running
+    let mut upd = Command::cargo_bin("tkr").unwrap();
+    upd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("running")
+        .assert()
+        .success();
+
+    // List filtered by state=running should include it
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--state")
+        .arg("running")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Running task"))
+        .stdout(predicate::str::contains("running"));
+
+    // List filtered by state=identified should NOT include it
+    let mut list_cmd = Command::cargo_bin("tkr").unwrap();
+    list_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .arg("--state")
+        .arg("identified")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Running task").not());
+}
+
+#[test]
+fn test_ai_task_show() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut show_cmd = Command::cargo_bin("tkr").unwrap();
+    show_cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("id: {}", id)))
+        .stdout(predicate::str::contains("title: Write migration tests"))
+        .stdout(predicate::str::contains("state: identified"))
+        .stdout(predicate::str::contains("agent_profile: (none)"))
+        .stdout(predicate::str::contains("task_id: ja-test001"))
+        .stdout(predicate::str::contains("created:"))
+        .stdout(predicate::str::contains("completed: (none)"))
+        .stdout(predicate::str::contains("result_summary: (none)"));
+}
+
+#[test]
+fn test_ai_task_update_state_transitions() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // identified -> dispatched
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("dispatched")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"))
+        .stdout(predicate::str::contains("dispatched"));
+
+    // Verify persistence
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: dispatched"));
+
+    // dispatched -> running
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("running")
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: running"));
+}
+
+#[test]
+fn test_ai_task_update_state_returned_stamps_completed() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // Transition to returned with a summary
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("returned")
+        .arg("--summary")
+        .arg("12 tests added, all green")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("returned"))
+        .stdout(predicate::str::contains("completed:"));
+
+    // Verify completed and result_summary persisted
+    let mut show = Command::cargo_bin("tkr").unwrap();
+    show.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: returned"))
+        .stdout(predicate::str::contains("12 tests added, all green"))
+        // completed should no longer be "(none)"
+        .stdout(predicate::str::contains("completed: (none)").not());
+}
+
+#[test]
+fn test_ai_task_update_state_invalid() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("closed")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid AI Task state"))
+        .stderr(predicate::str::contains("identified"))
+        .stderr(predicate::str::contains("dispatched"))
+        .stderr(predicate::str::contains("running"))
+        .stderr(predicate::str::contains("returned"));
+}
+
+#[test]
+fn test_ai_task_show_not_found() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg("ai-nope")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_ai_task_update_state_not_found() {
+    let (_db_temp, db_path) = setup_synced_task();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg("ai-nope")
+        .arg("dispatched")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_ai_task_commands_do_not_modify_markdown() {
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Snapshot markdown content before AI Task operations
+    let ticket_path = repo_temp
+        .path()
+        .join(".tickets")
+        .join("open")
+        .join("ja-test001.md");
+    let before = fs::read_to_string(&ticket_path).unwrap();
+
+    // Create an AI Task
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("create")
+        .arg("ja-test001")
+        .arg("Write migration tests")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let id = extract_ai_task_id(&String::from_utf8_lossy(&output.stdout));
+
+    // List, show, update-state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("list")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("show")
+        .arg(&id)
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("ai-task")
+        .arg("update-state")
+        .arg(&id)
+        .arg("dispatched")
+        .assert()
+        .success();
+
+    // Verify markdown was not modified
+    let after = fs::read_to_string(&ticket_path).unwrap();
+    assert_eq!(
+        before, after,
+        "markdown file was modified by an AI Task command"
+    );
+}

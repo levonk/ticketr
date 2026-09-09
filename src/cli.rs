@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story, AiTaskSubcommand, AiTask};
 use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
@@ -187,6 +187,11 @@ pub enum Commands {
     Tag {
         #[command(subcommand)]
         command: TagSubcommand,
+    },
+    /// AI Task management (delegated subtasks linked to a parent task)
+    AiTask {
+        #[command(subcommand)]
+        command: AiTaskSubcommand,
     },
 }
 
@@ -759,6 +764,64 @@ impl Commands {
                                     println!("{}", name);
                                 }
                             }
+                        }
+                    },
+                }
+            },
+            Commands::AiTask { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    AiTaskSubcommand::Create { task_id, title, agent_profile } => {
+                        let id = db.create_ai_task(
+                            &task_id,
+                            &title,
+                            agent_profile.as_deref(),
+                        )?;
+                        println!("{}", id);
+                    },
+                    AiTaskSubcommand::List { task, state } => {
+                        let ai_tasks = db.list_ai_tasks(task.as_deref(), state.as_deref())?;
+                        if ai_tasks.is_empty() {
+                            println!("No AI Tasks found");
+                        } else {
+                            for t in &ai_tasks {
+                                println!("{} - {} ({}) -> {}", t.id, t.title, t.state, t.task_id);
+                            }
+                        }
+                    },
+                    AiTaskSubcommand::Show { id } => {
+                        let t: AiTask = db.get_ai_task(&id)?;
+                        println!("id: {}", t.id);
+                        println!("title: {}", t.title);
+                        println!("state: {}", t.state);
+                        match t.agent_profile {
+                            Some(p) => println!("agent_profile: {}", p),
+                            None => println!("agent_profile: (none)"),
+                        }
+                        println!("task_id: {}", t.task_id);
+                        println!("created: {}", t.created);
+                        match t.completed {
+                            Some(c) => println!("completed: {}", c),
+                            None => println!("completed: (none)"),
+                        }
+                        match t.result_summary {
+                            Some(s) => println!("result_summary: {}", s),
+                            None => println!("result_summary: (none)"),
+                        }
+                    },
+                    AiTaskSubcommand::UpdateState { id, state, summary } => {
+                        let t = db.update_ai_task_state(
+                            &id,
+                            &state,
+                            summary.as_deref(),
+                        )?;
+                        if state == "returned" {
+                            let completed = t.completed.unwrap_or_default();
+                            println!("Updated {} -> {} (completed: {})", t.id, t.state, completed);
+                        } else {
+                            println!("Updated {} -> {}", t.id, t.state);
                         }
                     },
                 }

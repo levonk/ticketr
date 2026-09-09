@@ -1077,6 +1077,222 @@ impl PortfolioDb {
         }
         Ok(tags)
     }
+
+    // -----------------------------------------------------------------
+    // AI Task CRUD
+    // -----------------------------------------------------------------
+
+    /// Generate an AI Task ID with the `ai-` prefix using a timestamp
+    /// and UUID fragment for entropy, matching the pattern used by
+    /// [`PortfolioDb::generate_requirement_id`].
+    pub fn generate_ai_task_id(&self) -> Result<String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis();
+        let uuid = uuid::Uuid::new_v4();
+        let uuid_str = uuid.as_simple().to_string();
+        let hash = format!("{:x}{}", timestamp % 10000, &uuid_str[..4]);
+        Ok(format!("ai-{}", hash))
+    }
+
+    /// Create a new AI Task linked to a parent task. Validates that the
+    /// parent task exists in the `tasks` table, generates an `ai-` prefixed
+    /// ID, and sets the initial state to `identified`. Returns the new AI
+    /// Task ID.
+    pub fn create_ai_task(
+        &self,
+        task_id: &str,
+        title: &str,
+        agent_profile: Option<&str>,
+    ) -> Result<String> {
+        // Verify the parent task exists (FK enforcement)
+        let task_exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM tasks WHERE id = ?1",
+            rusqlite::params![task_id],
+            |row| row.get(0),
+        )?;
+        if !task_exists {
+            anyhow::bail!("parent task \"{}\" not found", task_id);
+        }
+
+        let id = self.generate_ai_task_id()?;
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO ai_tasks (id, task_id, title, state, agent_profile, created)
+             VALUES (?1, ?2, ?3, 'identified', ?4, ?5)",
+            rusqlite::params![id, task_id, title, agent_profile, created],
+        )?;
+        Ok(id)
+    }
+
+    /// List AI Tasks, optionally filtered by parent task or state. Ordered
+    /// by creation time.
+    pub fn list_ai_tasks(
+        &self,
+        task_id: Option<&str>,
+        state: Option<&str>,
+    ) -> Result<Vec<AiTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, title, state, agent_profile, created, completed, result_summary
+             FROM ai_tasks
+             WHERE (?1 IS NULL OR task_id = ?1)
+               AND (?2 IS NULL OR state = ?2)
+             ORDER BY created",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![task_id, state], |row| {
+            Ok(AiTask {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                title: row.get(2)?,
+                state: row.get(3)?,
+                agent_profile: row.get(4)?,
+                created: row.get(5)?,
+                completed: row.get(6)?,
+                result_summary: row.get(7)?,
+            })
+        })?;
+        let mut ai_tasks = Vec::new();
+        for row in rows {
+            ai_tasks.push(row?);
+        }
+        Ok(ai_tasks)
+    }
+
+    /// Retrieve a single AI Task by ID. Returns an error if not found.
+    pub fn get_ai_task(&self, id: &str) -> Result<AiTask> {
+        self.conn
+            .query_row(
+                "SELECT id, task_id, title, state, agent_profile, created, completed, result_summary
+                 FROM ai_tasks WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(AiTask {
+                        id: row.get(0)?,
+                        task_id: row.get(1)?,
+                        title: row.get(2)?,
+                        state: row.get(3)?,
+                        agent_profile: row.get(4)?,
+                        created: row.get(5)?,
+                        completed: row.get(6)?,
+                        result_summary: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    anyhow::anyhow!("AI Task not found: {}", id)
+                }
+                _ => anyhow::anyhow!(e),
+            })
+    }
+
+    /// Transition an AI Task to a new state. Validates the state against
+    /// the allowed vocabulary. When transitioning to `returned`, stamps
+    /// the `completed` column with the current UTC timestamp and optionally
+    /// stores `result_summary`. Returns the updated AI Task.
+    pub fn update_ai_task_state(
+        &self,
+        id: &str,
+        state: &str,
+        result_summary: Option<&str>,
+    ) -> Result<AiTask> {
+        validate_ai_task_state(state)?;
+
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM ai_tasks WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("AI Task not found: {}", id);
+        }
+
+        if state == "returned" {
+            let completed = chrono::Utc::now().to_rfc3339();
+            self.conn.execute(
+                "UPDATE ai_tasks SET state = ?1, completed = ?2, result_summary = ?3
+                 WHERE id = ?4",
+                rusqlite::params![state, completed, result_summary, id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE ai_tasks SET state = ?1 WHERE id = ?2",
+                rusqlite::params![state, id],
+            )?;
+        }
+
+        self.get_ai_task(id)
+    }
+}
+
+/// An AI Task record — a delegated subtask linked to a parent task. AI
+/// Tasks are the seventh and lowest level of the 7-level hierarchy. They
+/// are DB-only (not indexed from markdown) and use their own state
+/// vocabulary: `identified`, `dispatched`, `running`, `returned`.
+#[derive(Debug, Serialize)]
+pub struct AiTask {
+    pub id: String,
+    pub task_id: String,
+    pub title: String,
+    pub state: String,
+    pub agent_profile: Option<String>,
+    pub created: String,
+    pub completed: Option<String>,
+    pub result_summary: Option<String>,
+}
+
+/// Subcommands for `tkr ai-task`.
+#[derive(Subcommand)]
+pub enum AiTaskSubcommand {
+    /// Create a new AI Task linked to a parent task
+    Create {
+        /// The parent task ID (must exist in the `tasks` table)
+        task_id: String,
+        /// The AI Task title
+        title: String,
+        /// Optional agent profile name (e.g. `subagent_general`)
+        #[arg(long = "agent-profile")]
+        agent_profile: Option<String>,
+    },
+    /// List AI Tasks, optionally filtered by parent task or state
+    List {
+        /// Filter to AI Tasks under this parent task
+        #[arg(long = "task")]
+        task: Option<String>,
+        /// Filter by state
+        #[arg(long = "state")]
+        state: Option<String>,
+    },
+    /// Show AI Task details
+    Show {
+        /// The AI Task ID
+        id: String,
+    },
+    /// Transition an AI Task to a new state
+    UpdateState {
+        /// The AI Task ID
+        id: String,
+        /// The new state (identified, dispatched, running, returned)
+        state: String,
+        /// Optional result summary (stored when transitioning to `returned`)
+        #[arg(long = "summary")]
+        summary: Option<String>,
+    },
+}
+
+/// Valid AI Task state values per the PRD AI Task vocabulary.
+const VALID_AI_TASK_STATES: &[&str] = &["identified", "dispatched", "running", "returned"];
+
+/// Validate that `state` is one of the allowed AI Task state values.
+fn validate_ai_task_state(state: &str) -> Result<()> {
+    if !VALID_AI_TASK_STATES.contains(&state) {
+        anyhow::bail!(
+            "invalid AI Task state \"{}\". Valid: identified, dispatched, running, returned",
+            state
+        );
+    }
+    Ok(())
 }
 
 /// Map a rusqlite row into a [`Project`] struct.
