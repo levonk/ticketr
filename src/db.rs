@@ -540,24 +540,69 @@ impl PortfolioDb {
     }
 
     /// Remove a project from the DB by its repo path (hard delete). Also
-    /// removes any apps associated with the project to satisfy foreign key
-    /// constraints. Returns an error if no project with that repo path exists.
-    pub fn unregister_project(&self, repo_path: &str) -> Result<()> {
-        // Delete apps for the project first to satisfy FK constraints
-        self.conn.execute(
-            "DELETE FROM apps WHERE project_id IN (
-                SELECT id FROM projects WHERE repo_path = ?1
-            )",
+    /// removes any apps, tasks, task_tags, ai_tasks, and priority_order
+    /// rows associated with the project to satisfy foreign key constraints.
+    /// The entire operation is wrapped in a transaction for safety.
+    /// Returns an error if no project with that repo path exists.
+    pub fn unregister_project(&mut self, repo_path: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+
+        // Look up the project ID first so we can use it for cleanup.
+        let project_id: i64 = match tx.query_row(
+            "SELECT id FROM projects WHERE repo_path = ?1",
             rusqlite::params![repo_path],
+            |row| row.get(0),
+        ) {
+            Ok(id) => id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                anyhow::bail!("Project not found: {}", repo_path);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        // Delete priority_order rows for tasks belonging to this project.
+        tx.execute(
+            "DELETE FROM priority_order WHERE task_id IN (
+                SELECT id FROM tasks WHERE project_id = ?1
+            )",
+            rusqlite::params![project_id],
         )?;
 
-        let affected = self.conn.execute(
-            "DELETE FROM projects WHERE repo_path = ?1",
-            rusqlite::params![repo_path],
+        // Delete task_tags rows for tasks belonging to this project.
+        tx.execute(
+            "DELETE FROM task_tags WHERE task_id IN (
+                SELECT id FROM tasks WHERE project_id = ?1
+            )",
+            rusqlite::params![project_id],
         )?;
-        if affected == 0 {
-            anyhow::bail!("Project not found: {}", repo_path);
-        }
+
+        // Delete ai_tasks rows for tasks belonging to this project.
+        tx.execute(
+            "DELETE FROM ai_tasks WHERE task_id IN (
+                SELECT id FROM tasks WHERE project_id = ?1
+            )",
+            rusqlite::params![project_id],
+        )?;
+
+        // Delete tasks belonging to this project.
+        tx.execute(
+            "DELETE FROM tasks WHERE project_id = ?1",
+            rusqlite::params![project_id],
+        )?;
+
+        // Delete apps for the project.
+        tx.execute(
+            "DELETE FROM apps WHERE project_id = ?1",
+            rusqlite::params![project_id],
+        )?;
+
+        // Finally, delete the project itself.
+        tx.execute(
+            "DELETE FROM projects WHERE id = ?1",
+            rusqlite::params![project_id],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 

@@ -421,7 +421,7 @@ impl Commands {
             },
             Commands::Project { command } => {
                 let db_path = PortfolioDb::db_path()?;
-                let db = PortfolioDb::open(&db_path)?;
+                let mut db = PortfolioDb::open(&db_path)?;
                 db.migrate()?;
                 match command {
                     ProjectSubcommand::Register { path, portfolio, name } => {
