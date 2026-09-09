@@ -62,7 +62,7 @@ impl TicketManager {
     }
 
     pub fn ensure_status_directories(&self) -> Result<()> {
-        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
+        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive", "logged"];
         for status in &statuses {
             let status_dir = self.tickets_dir.join(status);
             if !status_dir.exists() {
@@ -145,7 +145,7 @@ impl TicketManager {
 
     pub fn ticket_path(&self, id: &str) -> Result<PathBuf> {
         // Search in all status directories
-        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
+        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive", "logged"];
 
         for status in &statuses {
             let status_dir = self.get_status_dir(status);
@@ -303,7 +303,7 @@ impl TicketManager {
         }
 
         // Use traditional directory scan with status directories
-        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
+        let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive", "logged"];
         for status in &statuses {
             let status_dir = self.get_status_dir(status);
             if status_dir.exists() {
@@ -350,7 +350,7 @@ impl TicketManager {
                 
                 // Skip if it's a status directory
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
+                    let statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive", "logged"];
                     if statuses.contains(&name) {
                         continue;
                     }
@@ -677,7 +677,7 @@ impl TicketManager {
     }
 
     pub fn validate_status(&self, status: &str) -> Result<()> {
-        let valid_statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive"];
+        let valid_statuses = ["open", "in_progress", "closed", "blocked", "ready", "icebox", "archive", "logged"];
         if !valid_statuses.contains(&status) {
             anyhow::bail!("Invalid status: {}. Valid statuses: {}",
                 status, valid_statuses.join(", "));

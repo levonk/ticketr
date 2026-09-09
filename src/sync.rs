@@ -14,6 +14,7 @@ const STATUS_DIRS: &[&str] = &[
     "ready",
     "icebox",
     "archive",
+    "logged",
 ];
 
 /// Per-project sync result.
