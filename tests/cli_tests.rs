@@ -3076,3 +3076,335 @@ mod tkr_test_db {
         Connection::open(path).unwrap()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tag integration tests (story 04-002)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tag_add_writes_tags_to_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag add test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added tag"))
+        .stdout(predicate::str::contains("security"));
+
+    // Assert the markdown file contains the tags field
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("tags:"));
+    assert!(content.contains("security"));
+}
+
+#[test]
+fn test_tag_add_normalizes_to_lowercase() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag normalize test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("Backend")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"));
+
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("backend"));
+    assert!(!content.contains("Backend"));
+}
+
+#[test]
+fn test_tag_add_idempotent() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag idempotent test task");
+
+    // First add
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added tag"));
+
+    // Second add — should say "already on"
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already on"));
+
+    // Assert only one tag in the markdown
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    let count = content.matches("security").count();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_tag_remove_removes_from_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag remove test task");
+
+    // Add a tag first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success();
+
+    // Remove it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("remove")
+        .arg(&task_id)
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed tag"));
+
+    // Assert the tags field is gone (skipped when empty)
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(!content.contains("tags:"));
+}
+
+#[test]
+fn test_tag_remove_missing_is_noop() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag remove missing test task");
+
+    // Capture content before
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_before = fs::read_to_string(&ticket_files[0]).unwrap();
+
+    // Remove a tag that doesn't exist
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("remove")
+        .arg(&task_id)
+        .arg("nope")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+
+    // Assert markdown is unchanged
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_after = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert_eq!(content_before, content_after);
+}
+
+#[test]
+fn test_tag_add_empty_rejected() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+
+    let task_id = setup_ticket(&tickets_dir, "Tag empty reject test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("tag")
+        .arg("add")
+        .arg(&task_id)
+        .arg("   ")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty"));
+}
+
+#[test]
+fn test_tag_list_shows_all_tags() {
+    // Set up a sync project with two tagged tickets
+    let ticket_a = "---\nid: ja-taga01\ntitle: Tag A\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag A\n";
+    let ticket_b = "---\nid: ja-tagb01\ntitle: Tag B\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [backend]\n---\n\n# Tag B\n";
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-taga01.md", ticket_a), ("ja-tagb01.md", ticket_b)]);
+
+    // Sync to populate tags + task_tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // List tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend"))
+        .stdout(predicate::str::contains("security"));
+}
+
+#[test]
+fn test_tag_list_tasks_shows_task_ids() {
+    let ticket_a = "---\nid: ja-taga01\ntitle: Tag A\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag A\n";
+    let ticket_b = "---\nid: ja-tagb01\ntitle: Tag B\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [backend]\n---\n\n# Tag B\n";
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-taga01.md", ticket_a), ("ja-tagb01.md", ticket_b)]);
+
+    // Sync to populate tags + task_tags
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // List tags with tasks
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .arg("--tasks")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backend: ja-tagb01"))
+        .stdout(predicate::str::contains("security: ja-taga01"));
+}
+
+#[test]
+fn test_tag_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("tag")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tags found"));
+}
+
+#[test]
+fn test_sync_reconciles_tags_add() {
+    let ticket_no_tags = "---\nid: ja-tagc01\ntitle: Tag Sync\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Tag Sync\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-tagc01.md", ticket_no_tags)]);
+
+    // First sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Add a tag to the markdown
+    let ticket_with_tags = "---\nid: ja-tagc01\ntitle: Tag Sync\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag Sync\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-tagc01.md"),
+        ticket_with_tags,
+    )
+    .unwrap();
+
+    // Second sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify task_tags row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagc01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn test_sync_reconciles_tags_remove() {
+    let ticket_with_tags = "---\nid: ja-tagd01\ntitle: Tag Sync Remove\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tag Sync Remove\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-tagd01.md", ticket_with_tags)]);
+
+    // First sync — populates the tag
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify the tag row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagd01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+
+    // Remove the tag from the markdown
+    let ticket_no_tags = "---\nid: ja-tagd01\ntitle: Tag Sync Remove\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Tag Sync Remove\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-tagd01.md"),
+        ticket_no_tags,
+    )
+    .unwrap();
+
+    // Second sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify the task_tags row is gone
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM task_tags tt
+             JOIN tags t ON t.id = tt.tag_id
+             WHERE tt.task_id = 'ja-tagd01' AND t.name = 'security'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_tag_field_backward_compat() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write a ticket with no tags field (old format)
+    let content = "---\nid: ja-oldtag01\ntitle: Old Tag Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Old Tag Ticket\n";
+    fs::write(tickets_dir.join("open").join("ja-oldtag01.md"), content).unwrap();
+
+    // List should still work (no parse error)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-oldtag01"));
+}

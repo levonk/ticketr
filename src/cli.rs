@@ -4,6 +4,27 @@ use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 
+/// Subcommands for `tkr tag`.
+#[derive(Subcommand)]
+pub enum TagSubcommand {
+    /// Add a tag to a task (writes to markdown frontmatter)
+    Add {
+        task_id: String,
+        tag: String,
+    },
+    /// Remove a tag from a task (writes to markdown frontmatter)
+    Remove {
+        task_id: String,
+        tag: String,
+    },
+    /// List all tags, or tags with their associated task IDs
+    List {
+        /// Show each tag with its associated task IDs
+        #[arg(long)]
+        tasks: bool,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "tkr")]
 #[command(about = "A ticket management system with dependency tracking and mono-repo support")]
@@ -160,6 +181,11 @@ pub enum Commands {
         /// Show sync status instead of running a sync
         #[arg(long)]
         status: bool,
+    },
+    /// Tag management (cross-cutting task tags)
+    Tag {
+        #[command(subcommand)]
+        command: TagSubcommand,
     },
 }
 
@@ -681,6 +707,44 @@ impl Commands {
                     "Sync complete: {} tasks indexed, {} updated, {} removed{}",
                     report.tasks_indexed, report.tasks_updated, report.tasks_removed, skipped_suffix
                 );
+            },
+            Commands::Tag { command } => {
+                match command {
+                    TagSubcommand::Add { task_id, tag } => {
+                        manager.add_tag(&task_id, &tag)?;
+                    },
+                    TagSubcommand::Remove { task_id, tag } => {
+                        manager.remove_tag(&task_id, &tag)?;
+                    },
+                    TagSubcommand::List { tasks } => {
+                        let db_path = PortfolioDb::db_path()?;
+                        let db = PortfolioDb::open(&db_path)?;
+                        db.migrate()?;
+                        if tasks {
+                            let tags = db.list_tags_with_tasks()?;
+                            if tags.is_empty() {
+                                println!("No tags found");
+                            } else {
+                                for (name, task_ids) in tags {
+                                    if task_ids.is_empty() {
+                                        println!("{}:", name);
+                                    } else {
+                                        println!("{}: {}", name, task_ids.join(", "));
+                                    }
+                                }
+                            }
+                        } else {
+                            let tags = db.list_tags()?;
+                            if tags.is_empty() {
+                                println!("No tags found");
+                            } else {
+                                for name in tags {
+                                    println!("{}", name);
+                                }
+                            }
+                        }
+                    },
+                }
             },
         }
         Ok(())

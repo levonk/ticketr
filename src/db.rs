@@ -970,6 +970,95 @@ impl PortfolioDb {
         )?;
         Ok(exists)
     }
+
+    // -----------------------------------------------------------------
+    // Tag CRUD
+    // -----------------------------------------------------------------
+
+    /// Upsert a tag name into the `tags` table, returning the tag's row id.
+    /// If the tag already exists (unique name), returns its existing id.
+    pub fn upsert_tag(&self, name: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tags (name) VALUES (?1)
+             ON CONFLICT(name) DO NOTHING",
+            rusqlite::params![name],
+        )?;
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )?;
+        Ok(id)
+    }
+
+    /// Reconcile the `task_tags` join rows for a single task: delete all
+    /// existing rows for `task_id`, then insert a row for each tag in
+    /// `tag_names` (upserting the tag name into `tags` first). Returns the
+    /// number of join rows inserted.
+    pub fn sync_task_tags(&self, task_id: &str, tag_names: &[String]) -> Result<usize> {
+        // Delete existing join rows for this task
+        self.conn.execute(
+            "DELETE FROM task_tags WHERE task_id = ?1",
+            rusqlite::params![task_id],
+        )?;
+
+        let mut inserted = 0;
+        for name in tag_names {
+            let tag_id = self.upsert_tag(name)?;
+            self.conn.execute(
+                "INSERT INTO task_tags (task_id, tag_id) VALUES (?1, ?2)
+                 ON CONFLICT(task_id, tag_id) DO NOTHING",
+                rusqlite::params![task_id, tag_id],
+            )?;
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
+    /// List all distinct tag names in the DB, ordered alphabetically.
+    pub fn list_tags(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM tags ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            Ok(name)
+        })?;
+        let mut tags = Vec::new();
+        for row in rows {
+            tags.push(row?);
+        }
+        Ok(tags)
+    }
+
+    /// List each tag name with the comma-separated task IDs carrying that
+    /// tag. Tags with no tasks are included with an empty task list.
+    /// Ordered by tag name.
+    pub fn list_tags_with_tasks(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.name, GROUP_CONCAT(tt.task_id, ', ')
+             FROM tags t
+             LEFT JOIN task_tags tt ON tt.tag_id = t.id
+             GROUP BY t.name
+             ORDER BY t.name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let joined: Option<String> = row.get(1)?;
+            let task_ids = joined
+                .unwrap_or_default()
+                .split(", ")
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            Ok((name, task_ids))
+        })?;
+        let mut tags = Vec::new();
+        for row in rows {
+            tags.push(row?);
+        }
+        Ok(tags)
+    }
 }
 
 /// Map a rusqlite row into a [`Project`] struct.

@@ -35,6 +35,8 @@ pub struct Ticket {
     pub notes: Option<Vec<Note>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub story: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +411,7 @@ impl TicketManager {
                     category: self.category.clone(),
                     notes: None,
                     story: None,
+                    tags: Vec::new(),
                 }
             }
         };
@@ -662,6 +665,7 @@ impl TicketManager {
             category: self.category.clone(),
             notes: if notes.is_empty() { None } else { Some(notes) },
             story: None,
+            tags: Vec::new(),
         })
     }
 
@@ -704,6 +708,7 @@ impl TicketManager {
             category: self.category.clone(),
             notes: None,
             story: None,
+            tags: Vec::new(),
         };
 
         self.save_ticket(&ticket)?;
@@ -841,6 +846,49 @@ impl TicketManager {
         println!("Cleared story link for {}", task_id);
         Ok(())
     }
+
+    /// Normalize a tag name: trim, lowercase, and reject empty/whitespace-only
+    /// input. Returns an error if the tag is empty after trimming.
+    pub fn normalize_tag(tag: &str) -> Result<String> {
+        let normalized = tag.trim().to_lowercase();
+        if normalized.is_empty() {
+            anyhow::bail!("tag must not be empty");
+        }
+        Ok(normalized)
+    }
+
+    /// Add a tag to a ticket's markdown `tags` list. The tag is normalized
+    /// (lowercased, trimmed) before insertion and de-duplicated — adding a
+    /// tag that already exists is a no-op (with a message). Returns `true`
+    /// if the tag was newly added.
+    pub fn add_tag(&self, task_id: &str, tag: &str) -> Result<bool> {
+        let normalized = Self::normalize_tag(tag)?;
+        let mut ticket = self.load_ticket(task_id)?;
+        if ticket.tags.iter().any(|t| t == &normalized) {
+            println!("Tag \"{}\" already on {}", normalized, task_id);
+            return Ok(false);
+        }
+        ticket.tags.push(normalized.clone());
+        self.save_ticket(&ticket)?;
+        println!("Added tag \"{}\" to {}", normalized, task_id);
+        Ok(true)
+    }
+
+    /// Remove a tag from a ticket's markdown `tags` list. The tag is
+    /// normalized before lookup. Removing a missing tag is a no-op (with a
+    /// message). Returns `true` if the tag was present and removed.
+    pub fn remove_tag(&self, task_id: &str, tag: &str) -> Result<bool> {
+        let normalized = Self::normalize_tag(tag)?;
+        let mut ticket = self.load_ticket(task_id)?;
+        if let Some(pos) = ticket.tags.iter().position(|t| t == &normalized) {
+            ticket.tags.remove(pos);
+            self.save_ticket(&ticket)?;
+            println!("Removed tag \"{}\" from {}", normalized, task_id);
+            return Ok(true);
+        }
+        println!("Tag \"{}\" not found on {}", normalized, task_id);
+        Ok(false)
+    }
 }
 
 #[derive(Debug)]
@@ -853,4 +901,117 @@ pub struct CreateOptions {
     pub assignee: Option<String>,
     pub external_ref: Option<String>,
     pub parent: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A ticket with no `tags` field in the frontmatter should parse with
+    /// an empty `tags` vector (backward compatibility).
+    #[test]
+    fn test_tags_backward_compat() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-old01\ntitle: Old Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Old Ticket\n";
+        fs::write(tickets_dir.join("open").join("ja-old01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        let ticket = manager.load_ticket("ja-old01").unwrap();
+        assert_eq!(ticket.tags, Vec::<String>::new());
+    }
+
+    /// Setting `tags` on a ticket, saving, and reloading should persist the
+    /// field (round trip).
+    #[test]
+    fn test_tags_round_trip() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-rt01\ntitle: Round Trip\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Round Trip\n";
+        fs::write(tickets_dir.join("open").join("ja-rt01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        let mut ticket = manager.load_ticket("ja-rt01").unwrap();
+        ticket.tags = vec!["security".to_string()];
+        manager.save_ticket(&ticket).unwrap();
+
+        let reloaded = manager.load_ticket("ja-rt01").unwrap();
+        assert_eq!(reloaded.tags, vec!["security".to_string()]);
+    }
+
+    /// Adding a tag with surrounding whitespace and mixed case should
+    /// normalize to lowercase, trimmed form.
+    #[test]
+    fn test_tags_normalization() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-norm01\ntitle: Normalize\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Normalize\n";
+        fs::write(tickets_dir.join("open").join("ja-norm01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        manager.add_tag("ja-norm01", "  Backend ").unwrap();
+
+        let ticket = manager.load_ticket("ja-norm01").unwrap();
+        assert_eq!(ticket.tags, vec!["backend".to_string()]);
+    }
+
+    /// Adding the same tag twice should not duplicate it in the list.
+    #[test]
+    fn test_tags_dedupe() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-ded01\ntitle: Dedupe\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Dedupe\n";
+        fs::write(tickets_dir.join("open").join("ja-ded01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        manager.add_tag("ja-ded01", "security").unwrap();
+        // Adding again should be a no-op
+        let added = manager.add_tag("ja-ded01", "security").unwrap();
+        assert!(!added);
+
+        let ticket = manager.load_ticket("ja-ded01").unwrap();
+        assert_eq!(ticket.tags, vec!["security".to_string()]);
+    }
+
+    /// An empty or whitespace-only tag should be rejected with an error.
+    #[test]
+    fn test_tags_empty_rejected() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-empty01\ntitle: Empty\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Empty\n";
+        fs::write(tickets_dir.join("open").join("ja-empty01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        let result = manager.add_tag("ja-empty01", "   ");
+        assert!(result.is_err());
+    }
+
+    /// Removing a tag that is not present should be a no-op (returns false).
+    #[test]
+    fn test_tags_remove_missing() {
+        let temp = TempDir::new().unwrap();
+        let tickets_dir = temp.path().join(".tickets");
+        fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+        let content = "---\nid: ja-rm01\ntitle: Remove\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Remove\n";
+        fs::write(tickets_dir.join("open").join("ja-rm01.md"), content).unwrap();
+
+        let manager = TicketManager::new(tickets_dir, None, None);
+        let removed = manager.remove_tag("ja-rm01", "nope").unwrap();
+        assert!(!removed);
+
+        let ticket = manager.load_ticket("ja-rm01").unwrap();
+        assert_eq!(ticket.tags, Vec::<String>::new());
+    }
 }

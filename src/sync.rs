@@ -197,6 +197,10 @@ impl<'a> SyncManager<'a> {
         }
 
         for id in &stale_ids {
+            // Remove task_tags join rows first (no ON DELETE CASCADE in schema)
+            self.db
+                .conn
+                .execute("DELETE FROM task_tags WHERE task_id = ?1", rusqlite::params![id])?;
             self.db
                 .conn
                 .execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
@@ -251,6 +255,9 @@ impl<'a> SyncManager<'a> {
                             }
                             UpsertResult::Skipped => {}
                         }
+                        // Reconcile tags for this task: replace its task_tags
+                        // rows with the current markdown tags set.
+                        self.db.sync_task_tags(&ticket.id, &ticket.tags)?;
                         current_ids.push(ticket.id);
                     }
                     Err(e) => {
@@ -445,6 +452,7 @@ mod tests {
             category: None,
             notes: None,
             story: None,
+            tags: Vec::new(),
         };
 
         // Insert
@@ -505,6 +513,7 @@ mod tests {
                 category: None,
                 notes: None,
                 story: None,
+                tags: Vec::new(),
             };
             sync.upsert_task(project_id, &ticket, "/tmp/test.md", "hash").unwrap();
         }
