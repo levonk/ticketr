@@ -1263,7 +1263,7 @@ async fn get_tasks(
 
     let sql = format!(
         "SELECT t.id, t.title, t.state, t.project_id, t.app_id, t.story_id, t.priority, t.markdown_path
-         FROM tasks t{} ORDER BY t.id",
+         FROM tasks t{}",
         where_clause
     );
 
@@ -1302,6 +1302,53 @@ async fn get_tasks(
             }
         }
     }
+
+    // Sort tasks by priority_order position for the relevant scope.
+    // Determine the scope from the query params, falling back to global.
+    let (scope_type, scope_id) = if let Some(ref story) = params.story {
+        ("story", story.clone())
+    } else if let Some(ref project) = params.project {
+        ("project", project.clone())
+    } else if let Some(ref portfolio) = params.portfolio {
+        ("portfolio", portfolio.clone())
+    } else if let Some(ref app) = params.app {
+        ("app", app.clone())
+    } else if let Some(ref requirement) = params.requirement {
+        ("requirement", requirement.clone())
+    } else if let Some(ref tag) = params.tag {
+        ("tag", tag.clone())
+    } else {
+        ("global", "global".to_string())
+    };
+
+    let pm = crate::priority::PriorityManager::new(conn);
+    let ordering = pm.get_ordering(scope_type, &scope_id).unwrap_or_default();
+
+    // Build a position map: task_id -> position index
+    let pos_map: std::collections::HashMap<String, usize> = ordering
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), i))
+        .collect();
+
+    // Sort: tasks with priority_order entries first (by position), then
+    // fall back to priority field (lower number = higher priority), then
+    // by id (alphabetical) as a stable tiebreaker.
+    tasks.sort_by(|a, b| {
+        let pa = pos_map.get(&a.id);
+        let pb = pos_map.get(&b.id);
+        match (pa, pb) {
+            (Some(i), Some(j)) => i.cmp(j),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => {
+                // Fall back to priority field, then id
+                a.priority
+                    .cmp(&b.priority)
+                    .then_with(|| a.id.cmp(&b.id))
+            }
+        }
+    });
 
     Ok(warp::reply::json(&tasks).into_response())
 }
@@ -1773,42 +1820,24 @@ async fn reorder_priority(
     let db = db.lock().map_err(|e| {
         warp::reject::custom(DbLockError(e.to_string()))
     })?;
-    let conn = &db.conn;
 
-    // Delete existing entry for this task in this scope
-    let _ = conn.execute(
-        "DELETE FROM priority_order WHERE scope_type = ?1 AND scope_id = ?2 AND task_id = ?3",
-        rusqlite::params![req.scope_type, req.scope_id, req.task_id],
-    );
-
-    // Shift positions of tasks at or after the new position
-    let _ = conn.execute(
-        "UPDATE priority_order SET position = position + 1
-         WHERE scope_type = ?1 AND scope_id = ?2 AND position >= ?3",
-        rusqlite::params![req.scope_type, req.scope_id, req.new_position],
-    );
-
-    // Insert the task at the new position
-    if let Err(e) = conn.execute(
-        "INSERT INTO priority_order (scope_type, scope_id, task_id, position)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![req.scope_type, req.scope_id, req.task_id, req.new_position],
-    ) {
-        return Ok(error_reply(
-            warp::http::StatusCode::BAD_REQUEST,
-            &e.to_string(),
-        ));
+    let pm = crate::priority::PriorityManager::new(&db.conn);
+    match pm.set_position(&req.scope_type, &req.scope_id, &req.task_id, req.new_position) {
+        Ok(ordered) => Ok(warp::reply::json(&PriorityResponse {
+            scope_type: req.scope_type,
+            scope_id: req.scope_id,
+            ordered_tasks: ordered,
+        })
+        .into_response()),
+        Err(e) => {
+            let status = if e.to_string().contains("Invalid scope type") {
+                warp::http::StatusCode::BAD_REQUEST
+            } else {
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(error_reply(status, &e.to_string()))
+        }
     }
-
-    // Return the ordered task list for this scope
-    let ordered = get_ordered_tasks(conn, &req.scope_type, &req.scope_id);
-
-    Ok(warp::reply::json(&PriorityResponse {
-        scope_type: req.scope_type,
-        scope_id: req.scope_id,
-        ordered_tasks: ordered,
-    })
-    .into_response())
 }
 
 async fn get_priority(
@@ -1838,39 +1867,23 @@ async fn get_priority(
         }
     };
 
-    let ordered = get_ordered_tasks(&db.conn, &scope_type, &scope_id);
-
-    Ok(warp::reply::json(&PriorityResponse {
-        scope_type,
-        scope_id,
-        ordered_tasks: ordered,
-    })
-    .into_response())
-}
-
-/// Query the ordered task IDs for a priority scope.
-fn get_ordered_tasks(conn: &Connection, scope_type: &str, scope_id: &str) -> Vec<String> {
-    let mut stmt = match conn.prepare(
-        "SELECT task_id FROM priority_order
-         WHERE scope_type = ?1 AND scope_id = ?2
-         ORDER BY position",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    let rows = match stmt.query_map(rusqlite::params![scope_type, scope_id], |row| {
-        row.get::<_, String>(0)
-    }) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut tasks = Vec::new();
-    for t in rows.flatten() {
-        tasks.push(t);
+    let pm = crate::priority::PriorityManager::new(&db.conn);
+    match pm.get_ordering(&scope_type, &scope_id) {
+        Ok(ordered) => Ok(warp::reply::json(&PriorityResponse {
+            scope_type,
+            scope_id,
+            ordered_tasks: ordered,
+        })
+        .into_response()),
+        Err(e) => {
+            let status = if e.to_string().contains("Invalid scope type") {
+                warp::http::StatusCode::BAD_REQUEST
+            } else {
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(error_reply(status, &e.to_string()))
+        }
     }
-    tasks
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,6 +2302,78 @@ mod tests {
         assert_eq!(ordered.len(), 2);
         assert_eq!(ordered[0], "ja-1");
         assert_eq!(ordered[1], "ja-2");
+    }
+
+    #[tokio::test]
+    async fn test_api_tasks_sorted_by_priority() {
+        let (_temp, db) = setup_db();
+        {
+            let d = db.lock().unwrap();
+            seed_hierarchy(&d.conn);
+            // Set story_id on ja-2 so both tasks are in story-1 scope
+            d.conn.execute(
+                "UPDATE tasks SET story_id = 'story-1' WHERE id = 'ja-2'",
+                [],
+            )
+            .unwrap();
+            // Set explicit ordering: ja-2 at position 0, ja-1 at position 1
+            d.conn.execute(
+                "INSERT INTO priority_order (scope_type, scope_id, task_id, position)
+                 VALUES ('story', 'story-1', 'ja-2', 0)",
+                [],
+            )
+            .unwrap();
+            d.conn.execute(
+                "INSERT INTO priority_order (scope_type, scope_id, task_id, position)
+                 VALUES ('story', 'story-1', 'ja-1', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let routes = all_api_routes(db);
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/api/tasks?story=story-1")
+            .reply(&routes)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        let tasks = body.as_array().unwrap();
+        // Both ja-1 and ja-2 have story_id = story-1
+        assert_eq!(tasks.len(), 2);
+        // ja-2 should be first (position 0), ja-1 second (position 1)
+        assert_eq!(tasks[0]["id"], "ja-2");
+        assert_eq!(tasks[1]["id"], "ja-1");
+    }
+
+    #[tokio::test]
+    async fn test_api_tasks_fallback_sort() {
+        let (_temp, db) = setup_db();
+        {
+            let d = db.lock().unwrap();
+            seed_hierarchy(&d.conn);
+            // Set story_id on ja-2 so both tasks are in story-1 scope
+            d.conn.execute(
+                "UPDATE tasks SET story_id = 'story-1' WHERE id = 'ja-2'",
+                [],
+            )
+            .unwrap();
+            // No priority_order entries — should auto-assign and fall back
+        }
+        let routes = all_api_routes(db);
+        let resp = warp::test::request()
+            .method("GET")
+            .path("/api/tasks?story=story-1")
+            .reply(&routes)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        let tasks = body.as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        // After auto-assignment, tasks are ordered by insertion (ja-1 first, ja-2 second)
+        // since auto-assign appends in scope task order
+        assert_eq!(tasks[0]["id"], "ja-1");
+        assert_eq!(tasks[1]["id"], "ja-2");
     }
 
     #[tokio::test]
