@@ -1101,3 +1101,278 @@ fn test_db_module_does_not_break_existing_commands() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// Portfolio CRUD integration tests (story 02-001)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_portfolio_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .arg("--description")
+        .arg("My personal work")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created portfolio: personal"))
+        .stdout(predicate::str::contains("curated"));
+
+    assert!(db_path.exists());
+}
+
+#[test]
+fn test_portfolio_create_without_description() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("oss")
+        .arg("Open Source")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created portfolio: oss"));
+}
+
+#[test]
+fn test_portfolio_create_duplicate_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create first
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    // Create duplicate
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_portfolio_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create two portfolios
+    for (id, name) in [("personal", "Personal"), ("business", "Business")] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("create")
+            .arg(id)
+            .arg(name)
+            .assert()
+            .success();
+    }
+
+    // List
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("Personal"))
+        .stdout(predicate::str::contains("business"))
+        .stdout(predicate::str::contains("Business"));
+}
+
+#[test]
+fn test_portfolio_list_excludes_dissolved() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create two portfolios
+    for (id, name) in [("personal", "Personal"), ("business", "Business")] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("create")
+            .arg(id)
+            .arg(name)
+            .assert()
+            .success();
+    }
+
+    // Dissolve one
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // List should not show dissolved
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("business"))
+        .stdout(predicate::str::contains("Business"))
+        .stdout(predicate::str::contains("personal").not());
+}
+
+#[test]
+fn test_portfolio_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .arg("--description")
+        .arg("My personal work")
+        .assert()
+        .success();
+
+    // Show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("show")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("personal"))
+        .stdout(predicate::str::contains("Personal"))
+        .stdout(predicate::str::contains("My personal work"))
+        .stdout(predicate::str::contains("curated"));
+}
+
+#[test]
+fn test_portfolio_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("show")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_portfolio_dissolve() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    // Dissolve
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Dissolved"));
+}
+
+#[test]
+fn test_portfolio_dissolve_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("nonexistent")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_portfolio_dissolve_already_dissolved() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create and dissolve
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Dissolve again — should be idempotent or warn
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("dissolve")
+        .arg("personal")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_portfolio_auto_creates_db() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    assert!(!db_path.exists());
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("create")
+        .arg("personal")
+        .arg("Personal")
+        .assert()
+        .success();
+
+    assert!(db_path.exists());
+}

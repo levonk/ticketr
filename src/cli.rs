@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand};
 use crate::ticket::{TicketManager, CreateOptions};
 
 #[derive(Parser)]
@@ -124,6 +125,11 @@ pub enum Commands {
     },
     /// Start terminal user interface (TUI)
     Tui,
+    /// Portfolio management
+    Portfolio {
+        #[command(subcommand)]
+        command: PortfolioSubcommand,
+    },
 }
 
 impl Commands {
@@ -258,6 +264,52 @@ impl Commands {
             },
             Commands::Tui => {
                 crate::tui::run_tui(manager).await?;
+            },
+            Commands::Portfolio { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    PortfolioSubcommand::Create { id, name, description } => {
+                        db.create_portfolio(&id, &name, description.as_deref())?;
+                        println!("Created portfolio: {} ({})", id, name);
+                        println!("State: curated");
+                    },
+                    PortfolioSubcommand::List => {
+                        let portfolios = db.list_portfolios(false)?;
+                        if portfolios.is_empty() {
+                            println!("No portfolios found");
+                        } else {
+                            println!(
+                                "{:<14} {:<14} {:<9} Created",
+                                "ID", "Name", "State"
+                            );
+                            for p in portfolios {
+                                println!(
+                                    "{:<14} {:<14} {:<9} {}",
+                                    p.id, p.name, p.state, p.created
+                                );
+                            }
+                        }
+                    },
+                    PortfolioSubcommand::Show { id } => {
+                        let p: Portfolio = db.get_portfolio(&id)?;
+                        println!("Portfolio: {}", p.id);
+                        println!("Name: {}", p.name);
+                        match p.description {
+                            Some(d) => println!("Description: {}", d),
+                            None => println!("Description: (none)"),
+                        }
+                        println!("State: {}", p.state);
+                        println!("Created: {}", p.created);
+                        println!("Position: {}", p.position);
+                    },
+                    PortfolioSubcommand::Dissolve { id } => {
+                        db.dissolve_portfolio(&id)?;
+                        let p = db.get_portfolio(&id)?;
+                        println!("Dissolved portfolio: {} ({})", p.id, p.name);
+                    },
+                }
             },
         }
         Ok(())

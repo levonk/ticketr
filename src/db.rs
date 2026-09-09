@@ -1,10 +1,41 @@
 use anyhow::Result;
+use clap::Subcommand;
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::PathBuf;
 
 /// Current schema version. Increment every time a new migration step is added
 /// to [`PortfolioDb::migrate`].
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// A portfolio record — the top level of the 7-level hierarchy.
+#[derive(Debug, Serialize)]
+pub struct Portfolio {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub state: String,
+    pub created: String,
+    pub position: i64,
+}
+
+/// Subcommands for `tkr portfolio`.
+#[derive(Subcommand)]
+pub enum PortfolioSubcommand {
+    /// Create a new portfolio
+    Create {
+        id: String,
+        name: String,
+        #[arg(short = 'd', long = "description")]
+        description: Option<String>,
+    },
+    /// List all portfolios
+    List,
+    /// Show portfolio details
+    Show { id: String },
+    /// Dissolve a portfolio (soft delete)
+    Dissolve { id: String },
+}
 
 /// Wrapper around a SQLite connection holding the portfolio database.
 pub struct PortfolioDb {
@@ -28,10 +59,15 @@ impl PortfolioDb {
         Ok(Self { conn })
     }
 
-    /// Resolve the default portfolio database path using the `directories`
-    /// crate (`~/.local/share/tkr/portfolio.db` on Linux,
+    /// Resolve the portfolio database path. If the `TKR_DB_PATH` environment
+    /// variable is set, it is used directly (primarily for testing).
+    /// Otherwise the `directories` crate resolves the platform default
+    /// (`~/.local/share/tkr/portfolio.db` on Linux,
     /// `~/Library/Application Support/tkr/portfolio.db` on macOS).
     pub fn db_path() -> Result<PathBuf> {
+        if let Ok(path) = std::env::var("TKR_DB_PATH") {
+            return Ok(PathBuf::from(path));
+        }
         use directories::ProjectDirs;
         let proj_dirs = ProjectDirs::from("", "", "tkr")
             .ok_or_else(|| anyhow::anyhow!("could not determine data directory"))?;
@@ -79,6 +115,109 @@ impl PortfolioDb {
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Create a new portfolio with the given ID, name, and optional
+    /// description. The portfolio is inserted with state `curated` and the
+    /// current UTC timestamp. Returns an error if a portfolio with the
+    /// same ID already exists.
+    pub fn create_portfolio(
+        &self,
+        id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<()> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM portfolios WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if exists {
+            anyhow::bail!("Portfolio already exists: {}", id);
+        }
+
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO portfolios (id, name, description, state, created, position)
+             VALUES (?1, ?2, ?3, 'curated', ?4, 0)",
+            rusqlite::params![id, name, description, created],
+        )?;
+        Ok(())
+    }
+
+    /// List all portfolios, ordered by position then creation time. When
+    /// `include_dissolved` is `false`, portfolios with state `dissolved` are
+    /// excluded.
+    pub fn list_portfolios(&self, include_dissolved: bool) -> Result<Vec<Portfolio>> {
+        let query = if include_dissolved {
+            "SELECT id, name, description, state, created, position
+             FROM portfolios ORDER BY position, created"
+        } else {
+            "SELECT id, name, description, state, created, position
+             FROM portfolios WHERE state != 'dissolved' ORDER BY position, created"
+        };
+        let mut stmt = self.conn.prepare(query)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Portfolio {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                state: row.get(3)?,
+                created: row.get(4)?,
+                position: row.get(5)?,
+            })
+        })?;
+        let mut portfolios = Vec::new();
+        for row in rows {
+            portfolios.push(row?);
+        }
+        Ok(portfolios)
+    }
+
+    /// Retrieve a single portfolio by ID. Returns an error if not found.
+    pub fn get_portfolio(&self, id: &str) -> Result<Portfolio> {
+        self.conn
+            .query_row(
+                "SELECT id, name, description, state, created, position
+                 FROM portfolios WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(Portfolio {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                        state: row.get(3)?,
+                        created: row.get(4)?,
+                        position: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    anyhow::anyhow!("Portfolio not found: {}", id)
+                }
+                _ => anyhow::anyhow!(e),
+            })
+    }
+
+    /// Set a portfolio's state to `dissolved` (soft delete). Idempotent —
+    /// dissolving an already-dissolved portfolio is a no-op. Returns an
+    /// error if the portfolio does not exist.
+    pub fn dissolve_portfolio(&self, id: &str) -> Result<()> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM portfolios WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("Portfolio not found: {}", id);
+        }
+
+        self.conn.execute(
+            "UPDATE portfolios SET state = 'dissolved' WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         Ok(())
     }
 }
