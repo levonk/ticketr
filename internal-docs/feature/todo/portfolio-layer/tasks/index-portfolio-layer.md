@@ -12,7 +12,7 @@ PRD: [feat-202609081145-portfolio-layer.md](../feat-202609081145-portfolio-layer
 | 03-003 | Story CRUD commands (create, list, show, ship) | 03 | [x] Done |  | true | 02-001 | 04-001, 04-003 | cli, story | feature/current/portfolio-layer/story-03-003-story-crud |
 | 03-004 | Markdown to SQLite sync (tkr sync) | 03 | [x] Done |  | true | 02-002 | 04-001, 04-002, 05-001 | sync, db | feature/current/portfolio-layer/story-03-004-markdown-sync |
 | 04-001 | Link tasks to stories (markdown frontmatter + DB sync) | 04 | [x] Done |  | true | 03-001, 03-003, 03-004 | 05-002 | ticket, story | feature/current/portfolio-layer/story-04-001-task-story-linking |
-| 04-002 | Tags field in Ticket + tag CLI + tag sync | 04 | [ ] Todo |  | true | 03-004 | 05-002 | ticket, tag | feature/current/portfolio-layer/story-04-002-tags |
+| 04-002 | Tags field in Ticket + tag CLI + tag sync | 04 | [x] Done |  | true | 03-004 | 05-002 | ticket, tag | feature/current/portfolio-layer/story-04-002-tags |
 | 04-003 | Portfolio views CLI (by-requirement, by-story, by-tag, by-project) | 04 | [ ] Todo |  | true | 03-002, 03-003, 03-004 | 05-002 | cli, views | feature/current/portfolio-layer/story-04-003-portfolio-views |
 | 04-004 | AI Task CRUD | 04 | [ ] Todo |  | true | 03-004 | 05-002 | cli, ai-task | feature/current/portfolio-layer/story-04-004-ai-task-crud |
 | 05-001 | File watcher + daemon process management | 05 | [ ] Todo |  | true | 03-004 | 06-002 | daemon, watcher | feature/current/portfolio-layer/story-05-001-daemon-watcher |
