@@ -1,5 +1,6 @@
 mod cli;
 mod db;
+mod sync;
 mod ticket;
 mod utils;
 mod web;

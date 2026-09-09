@@ -2582,3 +2582,176 @@ fn test_story_create_with_target_date_and_state() {
         .success()
         .stdout(predicate::str::contains("queued"));
 }
+
+// ---------------------------------------------------------------------------
+// Markdown sync integration tests (story 03-004)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio and register a project whose tickets_dir
+/// points to a temp repo with markdown ticket files. Returns the temp dirs
+/// (DB temp and repo temp) and the db_path so they stay alive for the test.
+fn setup_sync_project(
+    ticket_files: &[(&str, &str)], // (filename, content)
+) -> (TempDir, TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+
+    // Create the open status directory
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write ticket files
+    for (filename, content) in ticket_files {
+        fs::write(tickets_dir.join("open").join(filename), content).unwrap();
+    }
+
+    // Create portfolio
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register the project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path)
+}
+
+const TICKET_CONTENT: &str = "---\nid: ja-test001\ntitle: Test Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Test Ticket\n";
+
+#[test]
+fn test_sync_basic() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Sync complete"))
+        .stdout(predicate::str::contains("1 task"));
+}
+
+#[test]
+fn test_sync_idempotent() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Second sync — should report 0 indexed
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 tasks indexed"));
+}
+
+#[test]
+fn test_sync_detects_changes() {
+    let (_db_temp, repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Modify the file
+    let modified = "---\nid: ja-test001\ntitle: Updated Title\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Updated Title\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-test001.md"),
+        modified,
+    )
+    .unwrap();
+
+    // Second sync — should report 1 updated
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 updated"));
+}
+
+#[test]
+fn test_sync_removes_deleted() {
+    let (_db_temp, repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First sync
+    let mut cmd1 = Command::cargo_bin("tkr").unwrap();
+    cmd1.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Delete the file
+    fs::remove_file(
+        repo_temp.path().join(".tickets").join("open").join("ja-test001.md"),
+    )
+    .unwrap();
+
+    // Second sync — should report 1 removed
+    let mut cmd2 = Command::cargo_bin("tkr").unwrap();
+    cmd2.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 removed"));
+}
+
+#[test]
+fn test_sync_status() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // Run sync once to populate sync_state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Check status
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Last sync"))
+        .stdout(predicate::str::contains("Projects:"))
+        .stdout(predicate::str::contains("Tasks:"));
+}
+
+#[test]
+fn test_sync_github_stub() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not yet implemented"));
+}
+
+#[test]
+fn test_sync_invalid_markdown_skipped() {
+    let valid = "---\nid: ja-valid01\ntitle: Valid\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Valid\n";
+    let invalid = "This is not valid YAML\n";
+
+    let (_db_temp, _repo_temp, db_path) =
+        setup_sync_project(&[("ja-valid01.md", valid), ("broken.md", invalid)]);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 task"))
+        .stdout(predicate::str::contains("skipped"));
+}

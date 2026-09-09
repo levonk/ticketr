@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story};
+use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 
@@ -150,6 +151,15 @@ pub enum Commands {
     Story {
         #[command(subcommand)]
         command: StorySubcommand,
+    },
+    /// Sync markdown tickets into the SQLite portfolio DB
+    Sync {
+        /// Sync from GitHub (stub — not yet implemented)
+        #[arg(long)]
+        github: bool,
+        /// Show sync status instead of running a sync
+        #[arg(long)]
+        status: bool,
     },
 }
 
@@ -611,6 +621,53 @@ impl Commands {
                         );
                     },
                 }
+            },
+            Commands::Sync { github, status } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+
+                if github {
+                    println!("GitHub sync not yet implemented");
+                    return Ok(());
+                }
+
+                if status {
+                    let sync_manager = SyncManager::new(&db);
+                    let state = sync_manager.sync_status()?;
+                    match state.last_sync_at {
+                        Some(ts) => println!("Last sync: {}", ts),
+                        None => println!("Last sync: (never)"),
+                    }
+                    println!("Projects: {}", state.project_count);
+                    println!("Tasks:    {}", state.task_count);
+                    return Ok(());
+                }
+
+                let sync_manager = SyncManager::new(&db);
+                let projects = sync_manager.list_registered_projects()?;
+                let project_word = if projects.len() == 1 { "project" } else { "projects" };
+                println!("Syncing {} {}...", projects.len(), project_word);
+
+                let report = sync_manager.sync_all()?;
+
+                for pr in &report.projects {
+                    println!(
+                        "  Project \"{}\" (id: {}): {} tasks indexed, {} updated, {} removed",
+                        pr.project_name, pr.project_id,
+                        pr.tasks_indexed, pr.tasks_updated, pr.tasks_removed
+                    );
+                }
+
+                let skipped_suffix = if report.files_skipped > 0 {
+                    format!(" ({} file skipped)", report.files_skipped)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "Sync complete: {} tasks indexed, {} updated, {} removed{}",
+                    report.tasks_indexed, report.tasks_updated, report.tasks_removed, skipped_suffix
+                );
             },
         }
         Ok(())
