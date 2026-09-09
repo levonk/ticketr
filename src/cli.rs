@@ -620,6 +620,19 @@ impl Commands {
                             story.id, story.title
                         );
                     },
+                    StorySubcommand::Link { task_id, story_id } => {
+                        // Validate the story exists before touching markdown
+                        if !db.story_exists(&story_id)? {
+                            anyhow::bail!(
+                                "story \"{}\" not found in portfolio DB",
+                                story_id
+                            );
+                        }
+                        manager.link_story(&task_id, &story_id)?;
+                    },
+                    StorySubcommand::Unlink { task_id } => {
+                        manager.unlink_story(&task_id)?;
+                    },
                 }
             },
             Commands::Sync { github, status } => {

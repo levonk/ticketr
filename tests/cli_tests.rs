@@ -2755,3 +2755,324 @@ fn test_sync_invalid_markdown_skipped() {
         .stdout(predicate::str::contains("1 task"))
         .stdout(predicate::str::contains("skipped"));
 }
+
+// ---------------------------------------------------------------------------
+// Task-story linking integration tests (story 04-001)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a ticket in a temp tickets dir and return its ID.
+fn setup_ticket(tickets_dir: &std::path::Path, title: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", tickets_dir)
+        .arg("create")
+        .arg(title)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(output).unwrap().trim().to_string()
+}
+
+#[test]
+fn test_story_link_writes_story_to_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story in the DB
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+
+    // Create a task
+    let task_id = setup_ticket(&tickets_dir, "Link test task");
+
+    // Link the task to the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated"))
+        .stdout(predicate::str::contains(&story_id));
+
+    // Assert the markdown file contains the story field
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains(&format!("story: {}", story_id)));
+}
+
+#[test]
+fn test_story_unlink_removes_story_from_frontmatter() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story and a task, then link them
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+    let task_id = setup_ticket(&tickets_dir, "Unlink test task");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success();
+
+    // Verify the story field is present
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(content.contains("story:"));
+
+    // Unlink
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("unlink")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cleared story link"));
+
+    // Assert the story field is gone from the markdown
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert!(!content.contains("story:"));
+}
+
+#[test]
+fn test_story_link_nonexistent_story_fails() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a task (no story created in DB)
+    let task_id = setup_ticket(&tickets_dir, "Missing story test task");
+
+    // Capture the markdown content before the failed link
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_before = fs::read_to_string(&ticket_files[0]).unwrap();
+
+    // Attempt to link to a non-existent story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg("story-doesnotexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+
+    // Assert the markdown is unchanged
+    let ticket_files = find_ticket_files(&tickets_dir);
+    let content_after = fs::read_to_string(&ticket_files[0]).unwrap();
+    assert_eq!(content_before, content_after);
+}
+
+#[test]
+fn test_sync_populates_story_id_from_markdown() {
+    // Set up a sync project with a ticket (story field added after)
+    let ticket_no_story = "---\nid: ja-story01\ntitle: Story Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Story Task\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-story01.md", ticket_no_story)]);
+
+    // Create a story in the same DB that setup_sync_project uses
+    let story_id = setup_story(&db_path, "Sync Story");
+
+    // Rewrite the ticket with the story field
+    let ticket_with_story = format!(
+        "---\nid: ja-story01\ntitle: Story Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\n---\n\n# Story Task\n",
+        story_id
+    );
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-story01.md"),
+        &ticket_with_story,
+    )
+    .unwrap();
+
+    // Run sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Query the DB to verify story_id was populated
+    let db = tkr_test_db::open_db(&db_path);
+    let stored_story_id: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-story01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_story_id, Some(story_id));
+}
+
+#[test]
+fn test_sync_unlink_clears_story_id() {
+    // Set up a sync project with a ticket (no story yet)
+    let ticket_no_story = "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Unlink Task\n";
+    let (_db_temp, repo_temp, db_path) =
+        setup_sync_project(&[("ja-unlink01.md", ticket_no_story)]);
+
+    // Create a story in the same DB
+    let story_id = setup_story(&db_path, "Unlink Sync Story");
+
+    // Write the ticket with the story field
+    let ticket_with_story = format!(
+        "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\n---\n\n# Unlink Task\n",
+        story_id
+    );
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-unlink01.md"),
+        &ticket_with_story,
+    )
+    .unwrap();
+
+    // First sync — populates story_id
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    // Verify story_id is set
+    let db = tkr_test_db::open_db(&db_path);
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-unlink01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, Some(story_id.clone()));
+
+    // Remove the story field from the markdown
+    let ticket_without_story = "---\nid: ja-unlink01\ntitle: Unlink Task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Unlink Task\n";
+    fs::write(
+        repo_temp.path().join(".tickets").join("open").join("ja-unlink01.md"),
+        ticket_without_story,
+    )
+    .unwrap();
+
+    // Second sync — should clear story_id (set to NULL)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path).arg("sync").assert().success();
+
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT story_id FROM tasks WHERE id = 'ja-unlink01'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, None);
+}
+
+#[test]
+fn test_story_field_backward_compat() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Write a ticket with no story field (old format)
+    let content = "---\nid: ja-old01\ntitle: Old Ticket\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Old Ticket\n";
+    fs::write(tickets_dir.join("open").join("ja-old01.md"), content).unwrap();
+
+    // List should still work (no parse error)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-old01"));
+
+    // Show should still work
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg("ja-old01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Old Ticket"));
+}
+
+#[test]
+fn test_story_field_round_trip() {
+    let temp_dir = TempDir::new().unwrap();
+    let tickets_dir = temp_dir.path().join(".tickets");
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story
+    let story_id = setup_story(&db_path, "Round Trip Story");
+
+    // Create a task
+    let task_id = setup_ticket(&tickets_dir, "Round trip task");
+
+    // Link it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("link")
+        .arg(&task_id)
+        .arg(&story_id)
+        .assert()
+        .success();
+
+    // Show the ticket — should contain the story field
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains(&format!("story: {}", story_id)));
+
+    // Unlink it
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TICKETS_DIR", &tickets_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("unlink")
+        .arg(&task_id)
+        .assert()
+        .success();
+
+    // Show again — story field should be gone
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TICKETS_DIR", &tickets_dir)
+        .arg("show")
+        .arg(&task_id)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(!stdout.contains("story:"));
+}
+
+/// Helper module to open a read-only DB connection for test assertions.
+mod tkr_test_db {
+    use rusqlite::Connection;
+    use std::path::Path;
+
+    pub fn open_db(path: &Path) -> Connection {
+        Connection::open(path).unwrap()
+    }
+}

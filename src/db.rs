@@ -175,6 +175,13 @@ pub enum StorySubcommand {
     Show { id: String },
     /// Transition a story to the shipped (terminal) state
     Ship { id: String },
+    /// Link a task to a story (writes `story` into the task's markdown frontmatter)
+    Link {
+        task_id: String,
+        story_id: String,
+    },
+    /// Unlink a task from its story (removes the `story` field from markdown)
+    Unlink { task_id: String },
 }
 
 /// Valid requirement state values per the PRD requirement vocabulary.
@@ -950,6 +957,18 @@ impl PortfolioDb {
         )?;
 
         self.get_story(id)
+    }
+
+    /// Return true if a story with the given ID exists in the `stories`
+    /// table. Used by the `tkr story link` command to validate the target
+    /// story before writing to markdown.
+    pub fn story_exists(&self, id: &str) -> Result<bool> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM stories WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
     }
 }
 

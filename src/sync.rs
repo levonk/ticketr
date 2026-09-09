@@ -138,8 +138,8 @@ impl<'a> SyncManager<'a> {
                     "UPDATE tasks SET
                         project_id = ?1, title = ?2, state = ?3, priority = ?4,
                         issue_type = ?5, markdown_path = ?6, markdown_hash = ?7,
-                        synced_at = ?8
-                     WHERE id = ?9",
+                        synced_at = ?8, story_id = ?9
+                     WHERE id = ?10",
                     rusqlite::params![
                         project_id,
                         ticket.title,
@@ -149,6 +149,7 @@ impl<'a> SyncManager<'a> {
                         markdown_path,
                         hash,
                         synced_at,
+                        ticket.story,
                         ticket.id,
                     ],
                 )?;
@@ -158,8 +159,8 @@ impl<'a> SyncManager<'a> {
                 self.db.conn.execute(
                     "INSERT INTO tasks
                         (id, project_id, title, state, priority, issue_type,
-                         markdown_path, markdown_hash, synced_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                         markdown_path, markdown_hash, synced_at, story_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         ticket.id,
                         project_id,
@@ -170,6 +171,7 @@ impl<'a> SyncManager<'a> {
                         markdown_path,
                         hash,
                         synced_at,
+                        ticket.story,
                     ],
                 )?;
                 Ok(UpsertResult::Inserted)
@@ -442,6 +444,7 @@ mod tests {
             project: None,
             category: None,
             notes: None,
+            story: None,
         };
 
         // Insert
@@ -501,6 +504,7 @@ mod tests {
                 project: None,
                 category: None,
                 notes: None,
+                story: None,
             };
             sync.upsert_task(project_id, &ticket, "/tmp/test.md", "hash").unwrap();
         }

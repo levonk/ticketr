@@ -33,6 +33,8 @@ pub struct Ticket {
     pub category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<Vec<Note>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,6 +408,7 @@ impl TicketManager {
                     project: self.project.clone(),
                     category: self.category.clone(),
                     notes: None,
+                    story: None,
                 }
             }
         };
@@ -658,6 +661,7 @@ impl TicketManager {
             project: self.project.clone(),
             category: self.category.clone(),
             notes: if notes.is_empty() { None } else { Some(notes) },
+            story: None,
         })
     }
 
@@ -699,6 +703,7 @@ impl TicketManager {
             project: self.project.clone(),
             category: self.category.clone(),
             notes: None,
+            story: None,
         };
 
         self.save_ticket(&ticket)?;
@@ -814,6 +819,26 @@ impl TicketManager {
         let content = fs::read_to_string(&path)?;
 
         println!("{}", content);
+        Ok(())
+    }
+
+    /// Link a task to a story by writing `story: <story_id>` into the
+    /// ticket's markdown frontmatter. The caller is responsible for
+    /// validating that the story exists (see [`PortfolioDb::story_exists`]).
+    pub fn link_story(&self, task_id: &str, story_id: &str) -> Result<()> {
+        let mut ticket = self.load_ticket(task_id)?;
+        ticket.story = Some(story_id.to_string());
+        self.save_ticket(&ticket)?;
+        println!("Updated {} -> story: {}", task_id, story_id);
+        Ok(())
+    }
+
+    /// Clear the `story` field from a ticket's markdown frontmatter.
+    pub fn unlink_story(&self, task_id: &str) -> Result<()> {
+        let mut ticket = self.load_ticket(task_id)?;
+        ticket.story = None;
+        self.save_ticket(&ticket)?;
+        println!("Cleared story link for {}", task_id);
         Ok(())
     }
 }
