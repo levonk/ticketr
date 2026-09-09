@@ -15,7 +15,7 @@ PRD: [feat-202609081145-portfolio-layer.md](../feat-202609081145-portfolio-layer
 | 04-002 | Tags field in Ticket + tag CLI + tag sync | 04 | [x] Done |  | true | 03-004 | 05-002 | ticket, tag | feature/current/portfolio-layer/story-04-002-tags |
 | 04-003 | Portfolio views CLI (by-requirement, by-story, by-tag, by-project) | 04 | [x] Done |  | true | 03-002, 03-003, 03-004 | 05-002 | cli, views | feature/current/portfolio-layer/story-04-003-portfolio-views |
 | 04-004 | AI Task CRUD | 04 | [x] Done |  | true | 03-004 | 05-002 | cli, ai-task | feature/current/portfolio-layer/story-04-004-ai-task-crud |
-| 05-001 | File watcher + daemon process management | 05 | [ ] Todo |  | true | 03-004 | 06-002 | daemon, watcher | feature/current/portfolio-layer/story-05-001-daemon-watcher |
+| 05-001 | File watcher + daemon process management | 05 | [x] Done |  | true | 03-004 | 06-002 | daemon, watcher | feature/current/portfolio-layer/story-05-001-daemon-watcher |
 | 05-002 | Portfolio API endpoints (extending web.rs) | 05 | [ ] Todo |  | false | 04-001, 04-002, 04-003, 04-004 | 06-001, 06-003 | web, api | feature/current/portfolio-layer/story-05-002-portfolio-api |
 | 06-001 | Static web UI (Kanban board, drag-and-drop, count annotations, filtering) | 06 | [ ] Todo |  | true | 05-002 | — | web, ui | feature/current/portfolio-layer/story-06-001-kanban-web-ui |
 | 06-002 | GitHub Issues bidirectional sync (multi-account, tag to label) | 06 | [ ] Todo |  | true | 05-001 | — | sync, github | feature/current/portfolio-layer/story-06-002-github-sync |
