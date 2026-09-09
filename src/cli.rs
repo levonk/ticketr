@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story, AiTaskSubcommand, AiTask};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story, AiTaskSubcommand, AiTask, PrioritySubcommand};
 use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
@@ -216,6 +216,11 @@ pub enum Commands {
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
+    },
+    /// Priority ordering (drag-and-drop task reordering within a scope)
+    Priority {
+        #[command(subcommand)]
+        command: PrioritySubcommand,
     },
 }
 
@@ -923,6 +928,75 @@ impl Commands {
                     DaemonAction::Status => crate::daemon::status_daemon()?,
                     DaemonAction::Restart => crate::daemon::restart_daemon()?,
                     DaemonAction::Run => crate::daemon::run_daemon()?,
+                }
+            },
+            Commands::Priority { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                let pm = crate::priority::PriorityManager::new(&db.conn);
+                match command {
+                    PrioritySubcommand::Set { scope_type, scope_id, task_id, position } => {
+                        let ordered = pm.set_position(
+                            &scope_type,
+                            &scope_id,
+                            &task_id,
+                            position,
+                        )?;
+                        println!(
+                            "Moved {} to position {} in scope ({}, {})",
+                            task_id, position, scope_type, scope_id
+                        );
+                        println!("Updated ordering:");
+                        for (i, tid) in ordered.iter().enumerate() {
+                            let title_state: Option<(String, String)> = db.conn
+                                .query_row(
+                                    "SELECT title, state FROM tasks WHERE id = ?1",
+                                    rusqlite::params![tid],
+                                    |row| Ok((row.get(0)?, row.get(1)?)),
+                                )
+                                .ok();
+                            match title_state {
+                                Some((title, state)) => {
+                                    println!("  {}: {} ({}) [{}]", i, tid, title, state);
+                                }
+                                None => {
+                                    println!("  {}: {}", i, tid);
+                                }
+                            }
+                        }
+                    },
+                    PrioritySubcommand::List { scope_type, scope_id } => {
+                        let ordered = pm.get_ordering(&scope_type, &scope_id)?;
+                        if ordered.is_empty() {
+                            println!(
+                                "No tasks in scope ({}, {})",
+                                scope_type, scope_id
+                            );
+                        } else {
+                            println!(
+                                "Priority ordering for ({}, {}):",
+                                scope_type, scope_id
+                            );
+                            for (i, tid) in ordered.iter().enumerate() {
+                                let title_state: Option<(String, String)> = db.conn
+                                    .query_row(
+                                        "SELECT title, state FROM tasks WHERE id = ?1",
+                                        rusqlite::params![tid],
+                                        |row| Ok((row.get(0)?, row.get(1)?)),
+                                    )
+                                    .ok();
+                                match title_state {
+                                    Some((title, state)) => {
+                                        println!("  {}: {} - {} [{}]", i, tid, title, state);
+                                    }
+                                    None => {
+                                        println!("  {}: {}", i, tid);
+                                    }
+                                }
+                            }
+                        }
+                    },
                 }
             },
         }
