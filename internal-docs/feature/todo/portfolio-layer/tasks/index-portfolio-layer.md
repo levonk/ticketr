@@ -5,7 +5,7 @@ PRD: [feat-202609081145-portfolio-layer.md](../feat-202609081145-portfolio-layer
 | Story ID | Title | Phase | Status | Assignee | Parallel-safe | Dependencies | Dependants | Modules | Branch |
 |---|---|---:|---|---|---|---|---|---|---|
 | 01-001 | Add rusqlite dependency + portfolio DB module with schema migrations | 01 | [x] Done |  | true | — | 02-001, 02-002 | db, schema | feature/current/portfolio-layer/story-01-001-portfolio-db-foundation |
-| 02-001 | Portfolio CRUD commands (create, list, show, dissolve) | 02 | [ ] Todo |  | true | 01-001 | 03-002, 03-003, 04-003 | cli, portfolio | feature/current/portfolio-layer/story-02-001-portfolio-crud |
+| 02-001 | Portfolio CRUD commands (create, list, show, dissolve) | 02 | [x] Done |  | true | 01-001 | 03-002, 03-003, 04-003 | cli, portfolio | feature/current/portfolio-layer/story-02-001-portfolio-crud |
 | 02-002 | Project registration CLI commands + link to portfolio | 02 | [ ] Todo |  | true | 01-001 | 03-001, 03-004, 04-003 | cli, project | feature/current/portfolio-layer/story-02-002-project-registration |
 | 03-001 | App CRUD commands + auto-create default app | 03 | [ ] Todo |  | true | 02-002 | 04-001 | cli, app | feature/current/portfolio-layer/story-03-001-app-crud |
 | 03-002 | Requirement CRUD commands (create, list, show, supersede) | 03 | [ ] Todo |  | true | 02-001 | 04-003 | cli, requirement | feature/current/portfolio-layer/story-03-002-requirement-crud |
