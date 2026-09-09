@@ -109,7 +109,7 @@ fn load_git_root_config() -> Option<WebConfig> {
 
         if config_path.exists() {
             let content = std::fs::read_to_string(config_path).ok()?;
-            if let Some(config) = serde_yaml::from_str(&content).ok() {
+            if let Ok(config) = serde_yaml::from_str(&content) {
                 return Some(config);
             }
         }

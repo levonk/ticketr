@@ -418,7 +418,7 @@ impl TicketManager {
         fs::create_dir_all(&target_dir)?;
 
         // Move the file
-        fs::rename(&path, &target_path)?;
+        fs::rename(path, &target_path)?;
 
         println!("Moved ticket {} to {}/{}", 
             ticket.id, ticket.status, ticket.id);
@@ -631,7 +631,7 @@ impl TicketManager {
                         if description.is_none() {
                             description = Some(line.to_string());
                         } else if let Some(ref mut desc) = description {
-                            desc.push_str("\n");
+                            desc.push('\n');
                             desc.push_str(line);
                         }
                     }
