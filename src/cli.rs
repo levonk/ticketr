@@ -192,12 +192,15 @@ pub enum Commands {
     },
     /// Sync markdown tickets into the SQLite portfolio DB
     Sync {
-        /// Sync from GitHub (stub — not yet implemented)
+        /// Sync from GitHub (bidirectional Issues sync)
         #[arg(long)]
         github: bool,
         /// Show sync status instead of running a sync
         #[arg(long)]
         status: bool,
+        /// Dry-run mode: log what would be synced without making API calls
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Tag management (cross-cutting task tags)
     Tag {
@@ -704,13 +707,79 @@ impl Commands {
                     },
                 }
             },
-            Commands::Sync { github, status } => {
+            Commands::Sync { github, status, dry_run } => {
                 let db_path = PortfolioDb::db_path()?;
                 let db = PortfolioDb::open(&db_path)?;
                 db.migrate()?;
 
                 if github {
-                    println!("GitHub sync not yet implemented");
+                    let gh_sync = crate::github_sync::GitHubSync::new(&db);
+
+                    if status {
+                        let state = gh_sync.status()?;
+                        println!("GitHub Sync Status:");
+                        match state.last_github_sync {
+                            Some(ts) => println!("  Last sync: {}", ts),
+                            None => println!("  Last sync: (never)"),
+                        }
+                        println!("  Projects synced: {}", state.projects_synced);
+                        println!("  Total tasks linked: {}", state.total_tasks_linked);
+                        println!("  Errors: {}", state.github_sync_errors);
+                        return Ok(());
+                    }
+
+                    // Build the client (real or dry-run).
+                    let client: Option<crate::github_sync::ReqwestClient> = if dry_run {
+                        None
+                    } else {
+                        match crate::github_sync::ReqwestClient::new(None) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                eprintln!("Warning: could not create GitHub client: {}", e);
+                                eprintln!("Falling back to dry-run mode.");
+                                None
+                            }
+                        }
+                    };
+
+                    let client_ref: Option<&dyn crate::github_sync::GitHubClient> =
+                        client.as_ref().map(|c| c as &dyn crate::github_sync::GitHubClient);
+
+                    let report = gh_sync.sync(client_ref, dry_run).await?;
+
+                    if report.projects.is_empty() {
+                        println!("No projects with GitHub info to sync.");
+                        return Ok(());
+                    }
+
+                    let project_word = if report.projects.len() == 1 { "project" } else { "projects" };
+                    println!("Syncing {} {} with GitHub:", report.projects.len(), project_word);
+                    for pr in &report.projects {
+                        let account_display = pr.github_account.as_deref().unwrap_or("(default)");
+                        println!(
+                            "  {} ({}/{}) via account: {}",
+                            pr.project_name, pr.github_owner, pr.github_repo, account_display
+                        );
+                        let conflict_suffix = if pr.conflicts > 0 {
+                            format!(", {} conflict(s)", pr.conflicts)
+                        } else {
+                            String::new()
+                        };
+                        let error_suffix = if pr.errors > 0 {
+                            format!(", {} error(s)", pr.errors)
+                        } else {
+                            String::new()
+                        };
+                        println!(
+                            "    Pushed {} task(s), pulled {} task(s){}{}",
+                            pr.pushed, pr.pulled, conflict_suffix, error_suffix
+                        );
+                    }
+
+                    println!(
+                        "GitHub sync complete: {} pushed, {} pulled, {} conflicts, {} errors",
+                        report.total_pushed, report.total_pulled, report.total_conflicts, report.total_errors
+                    );
                     return Ok(());
                 }
 

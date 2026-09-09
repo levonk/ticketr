@@ -2,6 +2,7 @@ mod api;
 mod cli;
 mod daemon;
 mod db;
+mod github_sync;
 mod portfolio_view;
 mod sync;
 mod ticket;

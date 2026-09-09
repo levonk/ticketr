@@ -2726,7 +2726,7 @@ fn test_sync_status() {
 }
 
 #[test]
-fn test_sync_github_stub() {
+fn test_sync_github_no_projects() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("portfolio.db");
 
@@ -2736,7 +2736,54 @@ fn test_sync_github_stub() {
         .arg("--github")
         .assert()
         .success()
-        .stdout(predicate::str::contains("not yet implemented"));
+        .stdout(predicate::str::contains("No projects with GitHub info"));
+}
+
+#[test]
+fn test_sync_github_status_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .arg("--status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GitHub Sync Status"))
+        .stdout(predicate::str::contains("Last sync: (never)"));
+}
+
+#[test]
+fn test_sync_github_dry_run() {
+    let (_db_temp, _repo_temp, db_path) = setup_sync_project(&[("ja-test001.md", TICKET_CONTENT)]);
+
+    // First, run a normal sync to index the task into the DB.
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Set GitHub info on the project via SQL (project name is derived from
+    // the temp dir, so update all projects).
+    let db = tkr_test_db::open_db(&db_path);
+    db.execute(
+        "UPDATE projects SET github_owner = 'owner', github_repo = 'repo'",
+        [],
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .arg("--github")
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Syncing 1 project with GitHub"))
+        .stdout(predicate::str::contains("Pushed 1 task"));
 }
 
 #[test]
