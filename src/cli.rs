@@ -3,6 +3,7 @@ use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, 
 use crate::sync::SyncManager;
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
+use crate::portfolio_view;
 
 /// Subcommands for `tkr tag`.
 #[derive(Subcommand)]
@@ -365,6 +366,22 @@ impl Commands {
                         db.dissolve_portfolio(&id)?;
                         let p = db.get_portfolio(&id)?;
                         println!("Dissolved portfolio: {} ({})", p.id, p.name);
+                    },
+                    PortfolioSubcommand::View {
+                        by_requirement,
+                        by_story,
+                        by_tag,
+                        by_project,
+                        json,
+                    } => {
+                        execute_portfolio_view(
+                            &db,
+                            by_requirement,
+                            by_story,
+                            by_tag,
+                            by_project,
+                            json,
+                        )?;
                     },
                 }
             },
@@ -749,4 +766,56 @@ impl Commands {
         }
         Ok(())
     }
+}
+
+/// Execute a `tkr portfolio view` subcommand.
+///
+/// Validates that exactly one grouping flag is set, runs the corresponding
+/// query, and renders the result as text or JSON.
+fn execute_portfolio_view(
+    db: &PortfolioDb,
+    by_requirement: bool,
+    by_story: bool,
+    by_tag: Option<Option<String>>,
+    by_project: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    // Count how many grouping flags are set.
+    let flag_count = [
+        by_requirement as u8,
+        by_story as u8,
+        by_tag.is_some() as u8,
+        by_project as u8,
+    ]
+    .iter()
+    .sum::<u8>();
+
+    if flag_count == 0 {
+        anyhow::bail!(
+            "Error: specify one of --by-requirement, --by-story, --by-tag, --by-project"
+        );
+    }
+    if flag_count > 1 {
+        anyhow::bail!("Error: specify exactly one grouping flag");
+    }
+
+    let result = if by_requirement {
+        portfolio_view::view_by_requirement(&db.conn)?
+    } else if by_story {
+        portfolio_view::view_by_story(&db.conn)?
+    } else if by_project {
+        portfolio_view::view_by_project(&db.conn)?
+    } else if let Some(tag_opt) = by_tag {
+        portfolio_view::view_by_tag(&db.conn, tag_opt.as_deref())?
+    } else {
+        unreachable!("validated above");
+    };
+
+    if json {
+        println!("{}", portfolio_view::render_json(&result)?);
+    } else {
+        print!("{}", portfolio_view::render_text(&result));
+    }
+
+    Ok(())
 }
