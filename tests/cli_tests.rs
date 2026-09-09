@@ -4236,3 +4236,291 @@ fn test_ai_task_commands_do_not_modify_markdown() {
         "markdown file was modified by an AI Task command"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Daemon lifecycle integration tests (story 05-001)
+// ---------------------------------------------------------------------------
+
+/// RAII guard that stops the daemon on drop so test processes don't leak.
+struct DaemonGuard {
+    daemon_dir: PathBuf,
+    db_path: PathBuf,
+}
+
+impl DaemonGuard {
+    fn new(daemon_dir: PathBuf, db_path: PathBuf) -> Self {
+        Self { daemon_dir, db_path }
+    }
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = Command::cargo_bin("tkr")
+            .unwrap()
+            .env("TKR_DAEMON_DIR", &self.daemon_dir)
+            .env("TKR_DB_PATH", &self.db_path)
+            .arg("daemon")
+            .arg("stop");
+    }
+}
+
+/// Set up a synced project for daemon tests: creates a portfolio, registers a
+/// repo with ticket files, and runs an initial sync. Returns the temp dirs
+/// (kept alive), the db_path, the daemon_dir, and the repo tickets dir.
+fn setup_daemon_project(
+    ticket_files: &[(&str, &str)],
+) -> (TempDir, TempDir, PathBuf, PathBuf, PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let daemon_temp = TempDir::new().unwrap();
+    let daemon_dir = daemon_temp.path().to_path_buf();
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    for (filename, content) in ticket_files {
+        fs::write(tickets_dir.join("open").join(filename), content).unwrap();
+    }
+
+    // Create portfolio
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register the project
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .env("TKR_DAEMON_DIR", &daemon_dir)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Initial sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .env("TKR_DAEMON_DIR", &daemon_dir)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path, daemon_dir, tickets_dir)
+}
+
+/// Start the daemon with the given env vars and return the guard.
+fn start_daemon(daemon_dir: &PathBuf, db_path: &PathBuf) -> DaemonGuard {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", daemon_dir)
+        .env("TKR_DB_PATH", db_path)
+        .arg("daemon")
+        .arg("start")
+        .assert()
+        .success();
+
+    DaemonGuard::new(daemon_dir.clone(), db_path.clone())
+}
+
+#[test]
+fn test_daemon_start_creates_pid_file() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d001.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let pid_path = daemon_dir.join("daemon.pid");
+    assert!(pid_path.exists(), "PID file should exist after start");
+
+    let pid_str = fs::read_to_string(&pid_path).unwrap();
+    let pid: u32 = pid_str.trim().parse().unwrap();
+    assert!(pid > 0, "PID should be a positive number");
+}
+
+#[test]
+fn test_daemon_stop_removes_pid_file() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d002.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let pid_path = daemon_dir.join("daemon.pid");
+    assert!(pid_path.exists());
+
+    // Explicitly stop (the guard will also try on drop, which is fine)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("stop")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Daemon stopped"));
+
+    assert!(!pid_path.exists(), "PID file should be removed after stop");
+}
+
+#[test]
+fn test_daemon_status_running() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d003.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running"));
+}
+
+#[test]
+fn test_daemon_status_not_running() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let daemon_temp = TempDir::new().unwrap();
+    let daemon_dir = daemon_temp.path().to_path_buf();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn test_daemon_restart() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, _tickets_dir) =
+        setup_daemon_project(&[("ja-d004.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Capture original PID
+    let pid_path = daemon_dir.join("daemon.pid");
+    let old_pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+
+    // Restart
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DAEMON_DIR", &daemon_dir)
+        .env("TKR_DB_PATH", &db_path)
+        .arg("daemon")
+        .arg("restart")
+        .assert()
+        .success();
+
+    // New PID should differ
+    let new_pid: u32 = fs::read_to_string(&pid_path).unwrap().trim().parse().unwrap();
+    assert_ne!(old_pid, new_pid, "New PID should differ from old PID after restart");
+}
+
+#[test]
+fn test_daemon_file_change_syncs_to_sqlite() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d005.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Modify the ticket file
+    let modified = "---\nid: ja-d005\ntitle: Updated by Daemon\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Updated by Daemon\n";
+    fs::write(tickets_dir.join("open").join("ja-d005.md"), modified).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut synced = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let title: Option<String> = db
+            .query_row(
+                "SELECT title FROM tasks WHERE id = 'ja-d005'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        if title == Some("Updated by Daemon".to_string()) {
+            synced = true;
+            break;
+        }
+    }
+    assert!(synced, "SQLite should reflect the updated title within 10 seconds");
+}
+
+#[test]
+fn test_daemon_file_create_inserts_row() {
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d006.md", TICKET_CONTENT)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Create a new ticket file
+    let new_ticket = "---\nid: ja-dnew1\ntitle: New Ticket by Daemon\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# New Ticket by Daemon\n";
+    fs::write(tickets_dir.join("open").join("ja-dnew1.md"), new_ticket).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut inserted = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE id = 'ja-dnew1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if count > 0 {
+            inserted = true;
+            break;
+        }
+    }
+    assert!(inserted, "New row should appear in SQLite after file creation");
+}
+
+#[test]
+fn test_daemon_file_delete_removes_row() {
+    let ticket = "---\nid: ja-d007\ntitle: Delete Me\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Delete Me\n";
+    let (_db_temp, _repo_temp, db_path, daemon_dir, tickets_dir) =
+        setup_daemon_project(&[("ja-d007.md", ticket)]);
+
+    let _guard = start_daemon(&daemon_dir, &db_path);
+
+    // Verify the row exists
+    let db = tkr_test_db::open_db(&db_path);
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE id = 'ja-d007'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "Task should exist before deletion");
+
+    // Delete the ticket file
+    fs::remove_file(tickets_dir.join("open").join("ja-d007.md")).unwrap();
+
+    // Poll the DB for up to 10 seconds
+    let mut removed = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let db = tkr_test_db::open_db(&db_path);
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE id = 'ja-d007'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if count == 0 {
+            removed = true;
+            break;
+        }
+    }
+    assert!(removed, "Row should be removed from SQLite after file deletion");
+}
