@@ -3408,3 +3408,317 @@ fn test_tag_field_backward_compat() {
         .success()
         .stdout(predicate::str::contains("ja-oldtag01"));
 }
+
+// ---------------------------------------------------------------------------
+// Portfolio views integration tests (story 04-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a synced portfolio DB with two projects, a requirement, a
+/// story, tasks (some linked to the story, some not), and tags. Returns the
+/// temp dirs (kept alive) and the db_path.
+fn setup_view_data() -> (TempDir, TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let repo_temp = TempDir::new().unwrap();
+    let repo_path = repo_temp.path().to_path_buf();
+    let tickets_dir = repo_path.join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+
+    // Create a story in the DB first (so we can reference it in markdown)
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+    let story_id = setup_story_with_requirement(&db_path, "Portfolio Layer", &req_id);
+
+    // Ticket 1: linked to story, tagged security
+    let t1 = format!(
+        "---\nid: ja-v001\ntitle: Add rusqlite dependency\nstatus: in_progress\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\ntags: [security]\n---\n\n# Add rusqlite\n",
+        story_id
+    );
+    // Ticket 2: linked to story, tagged backend
+    let t2 = format!(
+        "---\nid: ja-v002\ntitle: Add notify watcher\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\nstory: {}\ntags: [backend]\n---\n\n# Add notify\n",
+        story_id
+    );
+    // Ticket 3: unlinked, tagged security
+    let t3 = "---\nid: ja-v003\ntitle: Tidy docs\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\ntags: [security]\n---\n\n# Tidy docs\n";
+
+    fs::write(tickets_dir.join("open").join("ja-v001.md"), t1).unwrap();
+    fs::write(tickets_dir.join("open").join("ja-v002.md"), t2).unwrap();
+    fs::write(tickets_dir.join("open").join("ja-v003.md"), t3).unwrap();
+
+    // Register the project and sync
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(&repo_path)
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    (db_temp, repo_temp, db_path)
+}
+
+/// Helper: create a story linked to a requirement and return its ID.
+fn setup_story_with_requirement(db_path: &std::path::Path, title: &str, req_id: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg(title)
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn test_portfolio_view_by_requirement() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-requirement")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Multi-account Sync (2)"))
+        .stdout(predicate::str::contains("ja-v001 - Add rusqlite dependency (in_progress)"))
+        .stdout(predicate::str::contains("ja-v002 - Add notify watcher (open)"))
+        .stdout(predicate::str::contains("Showing 2 tasks across 1 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_story() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer (2)"))
+        .stdout(predicate::str::contains("(none) (1)"))
+        .stdout(predicate::str::contains("ja-v003 - Tidy docs (open)"))
+        .stdout(predicate::str::contains("Showing 3 tasks across 2 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_tag_filtered() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-tag=security")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ja-v001 - Add rusqlite dependency (in_progress)"))
+        .stdout(predicate::str::contains("ja-v003 - Tidy docs (open)"))
+        .stdout(predicate::str::contains("Showing 2 tasks across 1 groups"));
+}
+
+#[test]
+fn test_portfolio_view_by_tag_summary() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    // --by-tag with no value lists all tags with counts
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-tag")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("security"))
+        .stdout(predicate::str::contains("backend"));
+}
+
+#[test]
+fn test_portfolio_view_by_project() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-project")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Showing 3 tasks across 1 groups"))
+        .stdout(predicate::str::contains("ja-v001"))
+        .stdout(predicate::str::contains("ja-v002"))
+        .stdout(predicate::str::contains("ja-v003"));
+}
+
+#[test]
+fn test_portfolio_view_empty_group() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    // Create a requirement with no stories/tasks
+    setup_requirement(&db_path, "personal", "Empty Requirement");
+
+    // Also create a project with a task (so the DB isn't empty)
+    let repo_temp = TempDir::new().unwrap();
+    let tickets_dir = repo_temp.path().join(".tickets");
+    fs::create_dir_all(tickets_dir.join("open")).unwrap();
+    let ticket = "---\nid: ja-eg01\ntitle: Lone task\nstatus: open\ndeps: []\nlinks: []\ncreated: 2026-09-08T11:00:00Z\ntype: task\npriority: 2\n---\n\n# Lone\n";
+    fs::write(tickets_dir.join("open").join("ja-eg01.md"), ticket).unwrap();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("sync")
+        .assert()
+        .success();
+
+    // The requirement should appear with count 0 and an empty marker
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-requirement")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Empty Requirement (0)"))
+        .stdout(predicate::str::contains("(empty)"));
+}
+
+#[test]
+fn test_portfolio_view_no_flag_errors() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("specify one of"));
+}
+
+#[test]
+fn test_portfolio_view_multiple_flags_errors() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .arg("--by-project")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exactly one grouping flag"));
+}
+
+#[test]
+fn test_portfolio_view_json_output() {
+    let (_db_temp, _repo_temp, db_path) = setup_view_data();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-story")
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    // Should be valid JSON with expected keys
+    assert!(stdout.contains("\"version\""));
+    assert!(stdout.contains("\"groups\""));
+    assert!(stdout.contains("\"group\""));
+    assert!(stdout.contains("\"count\""));
+    assert!(stdout.contains("\"total_tasks\""));
+    assert!(stdout.contains("\"Portfolio Layer\""));
+    // Verify it parses as JSON
+    serde_json::from_str::<serde_json::Value>(&stdout).unwrap();
+}
+
+#[test]
+fn test_portfolio_view_empty_db_message() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // No projects, no tasks
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("portfolio")
+        .arg("view")
+        .arg("--by-project")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No tasks found"));
+}
+
+#[test]
+fn test_portfolio_view_readonly() {
+    let (_db_temp, repo_temp, db_path) = setup_view_data();
+
+    // Capture all markdown file contents before running the view
+    let tickets_dir = repo_temp.path().join(".tickets");
+    let open_dir = tickets_dir.join("open");
+    let mut before: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for entry in fs::read_dir(&open_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().map(|e| e == "md").unwrap_or(false) {
+            let content = fs::read_to_string(&path).unwrap();
+            before.push((path.clone(), content));
+        }
+    }
+
+    // Run all four views
+    for flag in &["--by-requirement", "--by-story", "--by-project", "--by-tag"] {
+        let mut cmd = Command::cargo_bin("tkr").unwrap();
+        cmd.env("TKR_DB_PATH", &db_path)
+            .arg("portfolio")
+            .arg("view")
+            .arg(flag)
+            .assert()
+            .success();
+    }
+
+    // Verify no markdown files changed
+    for (path, content) in &before {
+        let after = fs::read_to_string(path).unwrap();
+        assert_eq!(&after, content, "markdown file {} was modified by view", path.display());
+    }
+}
