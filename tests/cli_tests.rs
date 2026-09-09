@@ -2206,3 +2206,379 @@ fn test_requirement_create_with_target_date_and_state() {
         .stdout(predicate::str::contains("planned"))
         .stdout(predicate::str::contains("2026-12-01"));
 }
+
+// ---------------------------------------------------------------------------
+// Story CRUD integration tests (story 03-003)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a requirement under a portfolio and return its ID.
+fn setup_requirement(db_path: &std::path::Path, portfolio: &str, title: &str) -> String {
+    setup_portfolio(db_path, portfolio, "Portfolio");
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("requirement")
+        .arg("create")
+        .arg(title)
+        .arg(format!("--portfolio={}", portfolio))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("req-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Helper: create a story and return its ID.
+fn setup_story(db_path: &std::path::Path, title: &str) -> String {
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", db_path)
+        .arg("story")
+        .arg("create")
+        .arg(title)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn test_story_create() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .arg("--description=Cross-project portfolio management")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"))
+        .stdout(predicate::str::contains("story-"));
+}
+
+#[test]
+fn test_story_create_no_links() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Investigate WASM")
+        .arg("--description=Explore WebAssembly")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"));
+}
+
+#[test]
+fn test_story_create_invalid_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid story state"));
+}
+
+#[test]
+fn test_story_create_nonexistent_requirement() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--requirement=req-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_create_nonexistent_app() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .arg("--app=999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    setup_story(&db_path, "Portfolio Layer");
+    setup_story(&db_path, "Investigate WASM");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("Investigate WASM"));
+}
+
+#[test]
+fn test_story_list_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No stories found"));
+}
+
+#[test]
+fn test_story_list_by_requirement() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    // Create a story linked to the requirement
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success();
+
+    // Create a story without a requirement
+    setup_story(&db_path, "Standalone Story");
+
+    // List filtered by requirement — should contain Portfolio Layer, not Standalone
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .arg(format!("--requirement={}", req_id))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("Standalone Story").not());
+}
+
+#[test]
+fn test_story_list_by_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    // Create a story with default state (pitched)
+    setup_story(&db_path, "Default Story");
+
+    // Create a story with building state
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Building Story")
+        .arg("--state=building")
+        .assert()
+        .success();
+
+    // List filtered by state=building
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .arg("--state=building")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Building Story"))
+        .stdout(predicate::str::contains("Default Story").not());
+}
+
+#[test]
+fn test_story_show() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let req_id = setup_requirement(&db_path, "personal", "Multi-account Sync");
+
+    // Create a story with full details
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Portfolio Layer")
+        .arg(format!("--requirement={}", req_id))
+        .arg("--description=Cross-project portfolio management")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let story_id = stdout
+        .lines()
+        .find(|l| l.contains("story-"))
+        .and_then(|l| l.split("id: ").nth(1))
+        .and_then(|s| s.split(')').next())
+        .unwrap_or("");
+
+    // Show the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg(story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Portfolio Layer"))
+        .stdout(predicate::str::contains("pitched"))
+        .stdout(predicate::str::contains("Cross-project portfolio management"));
+}
+
+#[test]
+fn test_story_show_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg("story-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_ship() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let story_id = setup_story(&db_path, "Portfolio Layer");
+
+    // Ship the story
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("ship")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shipped"));
+
+    // Verify state is shipped via show
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("show")
+        .arg(&story_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shipped"));
+}
+
+#[test]
+fn test_story_ship_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("ship")
+        .arg("story-nonexist")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_story_id_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    let output = cmd
+        .env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Test")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert!(stdout.contains("story-"));
+}
+
+#[test]
+fn test_story_create_with_target_date_and_state() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("create")
+        .arg("Offline-first")
+        .arg("--state=queued")
+        .arg("--target-date=2026-12-01")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created story"));
+
+    // Verify the state appears in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("story")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued"));
+}

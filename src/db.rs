@@ -129,6 +129,54 @@ pub enum RequirementSubcommand {
     Supersede { id: String },
 }
 
+/// A story record — a feature slice at the coordination level of the
+/// hierarchy. Stories link a requirement (strategic) to an app (deployable
+/// unit) and group tasks (operational).
+#[derive(Debug, Serialize)]
+pub struct Story {
+    pub id: String,
+    pub requirement_id: Option<String>,
+    pub app_id: Option<i64>,
+    pub title: String,
+    pub description: Option<String>,
+    pub state: String,
+    pub created: String,
+    pub target_date: Option<String>,
+    pub position: i64,
+}
+
+/// Subcommands for `tkr story`.
+#[derive(Subcommand)]
+pub enum StorySubcommand {
+    /// Create a new story under a requirement and/or app
+    Create {
+        title: String,
+        #[arg(short = 'r', long = "requirement")]
+        requirement: Option<String>,
+        #[arg(short = 'a', long = "app")]
+        app: Option<i64>,
+        #[arg(short = 'd', long = "description")]
+        description: Option<String>,
+        #[arg(short = 's', long = "state", default_value = "pitched")]
+        state: String,
+        #[arg(long = "target-date")]
+        target_date: Option<String>,
+    },
+    /// List stories, optionally filtered by requirement, app, or state
+    List {
+        #[arg(short = 'r', long = "requirement")]
+        requirement: Option<String>,
+        #[arg(short = 'a', long = "app")]
+        app: Option<i64>,
+        #[arg(short = 's', long = "state")]
+        state: Option<String>,
+    },
+    /// Show story details
+    Show { id: String },
+    /// Transition a story to the shipped (terminal) state
+    Ship { id: String },
+}
+
 /// Valid requirement state values per the PRD requirement vocabulary.
 const VALID_REQUIREMENT_STATES: &[&str] =
     &["surfaced", "proposed", "planned", "current", "superseded"];
@@ -152,6 +200,29 @@ fn validate_app_state(state: &str) -> Result<()> {
     if !VALID_APP_STATES.contains(&state) {
         anyhow::bail!(
             "Invalid state: {}. Valid states: sketched, drafted, deployed, deprecated, sunset",
+            state
+        );
+    }
+    Ok(())
+}
+
+/// Valid story state values per the PRD delivery vocabulary.
+const VALID_STORY_STATES: &[&str] = &[
+    "suggested",
+    "pitched",
+    "queued",
+    "building",
+    "stalled",
+    "review",
+    "shipped",
+    "archived",
+];
+
+/// Validate that `state` is one of the allowed story state values.
+fn validate_story_state(state: &str) -> Result<()> {
+    if !VALID_STORY_STATES.contains(&state) {
+        anyhow::bail!(
+            "Invalid story state \"{}\". Allowed: suggested, pitched, queued, building, stalled, review, shipped, archived",
             state
         );
     }
@@ -716,6 +787,169 @@ impl PortfolioDb {
 
         let requirement = self.get_requirement(id)?;
         Ok((requirement, story_count))
+    }
+
+    // -----------------------------------------------------------------
+    // Story CRUD
+    // -----------------------------------------------------------------
+
+    /// Generate a story ID with the `story-` prefix using a timestamp
+    /// and UUID fragment for entropy, matching the pattern used by
+    /// [`PortfolioDb::generate_requirement_id`].
+    pub fn generate_story_id(&self) -> Result<String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis();
+        let uuid = uuid::Uuid::new_v4();
+        let uuid_str = uuid.as_simple().to_string();
+        let hash = format!("{:x}{}", timestamp % 10000, &uuid_str[..4]);
+        Ok(format!("story-{}", hash))
+    }
+
+    /// Create a new story. Validates the state against the PRD vocabulary,
+    /// checks FK targets if provided, and generates a `story-` prefixed ID.
+    /// Both `requirement_id` and `app_id` are optional (a story can be
+    /// created without links for triage). Returns the new story ID.
+    pub fn create_story(
+        &self,
+        requirement_id: Option<&str>,
+        app_id: Option<i64>,
+        title: &str,
+        description: Option<&str>,
+        state: &str,
+        target_date: Option<&str>,
+    ) -> Result<String> {
+        validate_story_state(state)?;
+
+        // Verify the requirement exists if provided (FK enforcement)
+        if let Some(req_id) = requirement_id {
+            let req_exists: bool = self.conn.query_row(
+                "SELECT COUNT(*) > 0 FROM requirements WHERE id = ?1",
+                rusqlite::params![req_id],
+                |row| row.get(0),
+            )?;
+            if !req_exists {
+                anyhow::bail!("Requirement not found: {}", req_id);
+            }
+        }
+
+        // Verify the app exists if provided (FK enforcement)
+        if let Some(aid) = app_id {
+            let app_exists: bool = self.conn.query_row(
+                "SELECT COUNT(*) > 0 FROM apps WHERE id = ?1",
+                rusqlite::params![aid],
+                |row| row.get(0),
+            )?;
+            if !app_exists {
+                anyhow::bail!("App not found: {}", aid);
+            }
+        }
+
+        let id = self.generate_story_id()?;
+        let created = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO stories (id, requirement_id, app_id, title, description, state, created, target_date, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+            rusqlite::params![id, requirement_id, app_id, title, description, state, created, target_date],
+        )?;
+        Ok(id)
+    }
+
+    /// List stories, optionally filtered by requirement, app, or state.
+    /// Ordered by position then creation time.
+    pub fn list_stories(
+        &self,
+        requirement_id: Option<&str>,
+        app_id: Option<i64>,
+        state: Option<&str>,
+    ) -> Result<Vec<Story>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, requirement_id, app_id, title, description, state, created, target_date, position
+             FROM stories
+             WHERE (?1 IS NULL OR requirement_id = ?1)
+               AND (?2 IS NULL OR app_id = ?2)
+               AND (?3 IS NULL OR state = ?3)
+             ORDER BY position, created",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![requirement_id, app_id, state], |row| {
+            Ok(Story {
+                id: row.get(0)?,
+                requirement_id: row.get(1)?,
+                app_id: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get(4)?,
+                state: row.get(5)?,
+                created: row.get(6)?,
+                target_date: row.get(7)?,
+                position: row.get(8)?,
+            })
+        })?;
+        let mut stories = Vec::new();
+        for row in rows {
+            stories.push(row?);
+        }
+        Ok(stories)
+    }
+
+    /// Retrieve a single story by ID. Returns an error if not found.
+    pub fn get_story(&self, id: &str) -> Result<Story> {
+        self.conn
+            .query_row(
+                "SELECT id, requirement_id, app_id, title, description, state, created, target_date, position
+                 FROM stories WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(Story {
+                        id: row.get(0)?,
+                        requirement_id: row.get(1)?,
+                        app_id: row.get(2)?,
+                        title: row.get(3)?,
+                        description: row.get(4)?,
+                        state: row.get(5)?,
+                        created: row.get(6)?,
+                        target_date: row.get(7)?,
+                        position: row.get(8)?,
+                    })
+                },
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    anyhow::anyhow!("Story not found: {}", id)
+                }
+                _ => anyhow::anyhow!(e),
+            })
+    }
+
+    /// Count the number of tasks linked to a story. Used by the `show`
+    /// command to display a task count.
+    pub fn count_story_tasks(&self, id: &str) -> Result<i64> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE story_id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
+    /// Transition a story to the `shipped` (terminal) state. Returns an
+    /// error if the story does not exist. Returns the updated story.
+    pub fn ship_story(&self, id: &str) -> Result<Story> {
+        let exists: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM stories WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            anyhow::bail!("Story not found: {}", id);
+        }
+
+        self.conn.execute(
+            "UPDATE stories SET state = 'shipped' WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+
+        self.get_story(id)
     }
 }
 

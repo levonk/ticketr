@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement};
+use crate::db::{PortfolioDb, Portfolio, PortfolioSubcommand, ProjectSubcommand, AppSubcommand, RequirementSubcommand, Requirement, StorySubcommand, Story};
 use crate::ticket::{TicketManager, CreateOptions};
 use crate::utils::detect_github_info;
 
@@ -145,6 +145,11 @@ pub enum Commands {
     Requirement {
         #[command(subcommand)]
         command: RequirementSubcommand,
+    },
+    /// Story management
+    Story {
+        #[command(subcommand)]
+        command: StorySubcommand,
     },
 }
 
@@ -533,6 +538,77 @@ impl Commands {
                                 if story_count == 1 { "story is" } else { "stories are" }
                             );
                         }
+                    },
+                }
+            },
+            Commands::Story { command } => {
+                let db_path = PortfolioDb::db_path()?;
+                let db = PortfolioDb::open(&db_path)?;
+                db.migrate()?;
+                match command {
+                    StorySubcommand::Create { title, requirement, app, description, state, target_date } => {
+                        let id = db.create_story(
+                            requirement.as_deref(),
+                            app,
+                            &title,
+                            description.as_deref(),
+                            &state,
+                            target_date.as_deref(),
+                        )?;
+                        let req_display = requirement.as_deref().unwrap_or("—");
+                        let app_display = app.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                        println!(
+                            "Created story \"{}\" (id: {}) for requirement {}, app {}",
+                            title, id, req_display, app_display
+                        );
+                    },
+                    StorySubcommand::List { requirement, app, state } => {
+                        let stories = db.list_stories(
+                            requirement.as_deref(),
+                            app,
+                            state.as_deref(),
+                        )?;
+                        if stories.is_empty() {
+                            println!("No stories found");
+                        } else {
+                            println!(
+                                "{:<14} {:<20} {:<10} {:<14} {:<6}",
+                                "ID", "Title", "State", "Requirement", "App"
+                            );
+                            for s in &stories {
+                                let req = s.requirement_id.clone().unwrap_or_else(|| "—".to_string());
+                                let a = s.app_id.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                                println!(
+                                    "{:<14} {:<20} {:<10} {:<14} {:<6}",
+                                    s.id, s.title, s.state, req, a
+                                );
+                            }
+                        }
+                    },
+                    StorySubcommand::Show { id } => {
+                        let story: Story = db.get_story(&id)?;
+                        let task_count = db.count_story_tasks(&id).unwrap_or(0);
+                        println!("Story:      {}", story.id);
+                        println!("Title:       {}", story.title);
+                        println!("State:       {}", story.state);
+                        let req_display = story.requirement_id.unwrap_or_else(|| "—".to_string());
+                        println!("Requirement: {}", req_display);
+                        let app_display = story.app_id.map(|a| a.to_string()).unwrap_or_else(|| "—".to_string());
+                        println!("App:         {}", app_display);
+                        let target = story.target_date.unwrap_or_else(|| "—".to_string());
+                        println!("Target Date: {}", target);
+                        println!("Tasks:       {}", task_count);
+                        match story.description {
+                            Some(d) => println!("\nDescription:\n{}", d),
+                            None => println!("\nDescription: (none)"),
+                        }
+                    },
+                    StorySubcommand::Ship { id } => {
+                        let story = db.ship_story(&id)?;
+                        println!(
+                            "Story {} (\"{}\") transitioned to shipped",
+                            story.id, story.title
+                        );
                     },
                 }
             },
