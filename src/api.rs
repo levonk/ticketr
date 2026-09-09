@@ -55,6 +55,9 @@ pub struct TaskResponse {
     pub priority: i64,
     pub tags: Vec<String>,
     pub markdown_path: String,
+    pub description: Option<String>,
+    pub assignee: Option<String>,
+    pub deps: Vec<String>,
 }
 
 /// A tag with its task count.
@@ -175,6 +178,7 @@ pub struct UpdateTaskRequest {
     pub priority: Option<i32>,
     pub story: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub deps: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1151,6 +1155,30 @@ fn get_task_tags(conn: &Connection, task_id: &str) -> Vec<String> {
     tags
 }
 
+/// Read description, assignee, and deps from a task's markdown frontmatter.
+/// Returns `(None, None, Vec::new())` if the file cannot be read or parsed.
+fn read_task_frontmatter(markdown_path: &str) -> (Option<String>, Option<String>, Vec<String>) {
+    use crate::ticket::Ticket;
+
+    let content = match std::fs::read_to_string(markdown_path) {
+        Ok(c) => c,
+        Err(_) => return (None, None, Vec::new()),
+    };
+
+    let parts: Vec<&str> = content.splitn(3, "---").collect();
+    if parts.len() < 3 {
+        return (None, None, Vec::new());
+    }
+
+    let yaml_content = parts[1].trim();
+    let ticket: Ticket = match serde_yaml::from_str(yaml_content) {
+        Ok(t) => t,
+        Err(_) => return (None, None, Vec::new()),
+    };
+
+    (ticket.description, ticket.assignee, ticket.deps)
+}
+
 /// Map a rusqlite row into a `TaskResponse`, including project name, app
 /// name, story id, and tags.
 fn map_task_row(conn: &Connection, row: &rusqlite::Row) -> rusqlite::Result<TaskResponse> {
@@ -1186,6 +1214,9 @@ fn map_task_row(conn: &Connection, row: &rusqlite::Row) -> rusqlite::Result<Task
 
     let tags = get_task_tags(conn, &id);
 
+    // Read description, assignee, and deps from the markdown source-of-truth.
+    let (description, assignee, deps) = read_task_frontmatter(&markdown_path);
+
     Ok(TaskResponse {
         id,
         title,
@@ -1196,6 +1227,9 @@ fn map_task_row(conn: &Connection, row: &rusqlite::Row) -> rusqlite::Result<Task
         priority,
         tags,
         markdown_path,
+        description,
+        assignee,
+        deps,
     })
 }
 
@@ -1431,6 +1465,22 @@ async fn update_task(
         }
     };
 
+    // Validate the status field against the valid task states.
+    const VALID_TASK_STATES: &[&str] =
+        &["logged", "open", "in_progress", "blocked", "ready", "closed"];
+    if let Some(ref status) = req.status {
+        if !VALID_TASK_STATES.contains(&status.as_str()) {
+            return Ok(error_reply(
+                warp::http::StatusCode::BAD_REQUEST,
+                &format!(
+                    "Invalid task state: '{}'. Valid states: {}",
+                    status,
+                    VALID_TASK_STATES.join(", "),
+                ),
+            ));
+        }
+    }
+
     // Update DB columns for the fields we can directly set
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1476,14 +1526,15 @@ async fn update_task(
     }
 
     // Write to markdown file (source of truth) if title, description,
-    // status, assignee, priority, story, or tags changed.
+    // status, assignee, priority, story, tags, or deps changed.
     let should_write_markdown = req.title.is_some()
         || req.description.is_some()
         || req.status.is_some()
         || req.assignee.is_some()
         || req.priority.is_some()
         || req.story.is_some()
-        || req.tags.is_some();
+        || req.tags.is_some()
+        || req.deps.is_some();
 
     if should_write_markdown {
         if let Err(e) = write_task_markdown(
@@ -1491,8 +1542,13 @@ async fn update_task(
             &id,
             &req,
         ) {
-            // Log but don't fail — DB is updated
-            eprintln!("Warning: failed to write markdown for task {}: {}", id, e);
+            // Markdown is the source of truth — a write failure means the
+            // DB and markdown are now inconsistent.  Return a 500 so the
+            // caller knows the update did not fully succeed.
+            return Ok(error_reply(
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to write markdown for task {}: {}", id, e),
+            ));
         }
     }
 
@@ -1569,6 +1625,9 @@ fn write_task_markdown(
     }
     if let Some(ref tags) = req.tags {
         ticket.tags = tags.clone();
+    }
+    if let Some(ref deps) = req.deps {
+        ticket.deps = deps.clone();
     }
 
     // Serialize back to markdown
@@ -1914,26 +1973,100 @@ pub fn sync_routes(
 }
 
 async fn trigger_sync(db: DbState) -> Result<warp::reply::Response, warp::Rejection> {
-    let db = db.lock().map_err(|e| {
-        warp::reject::custom(DbLockError(e.to_string()))
-    })?;
+    // First, check if there are any projects configured for GitHub sync.
+    // This is a synchronous DB read — we lock, read, and drop the guard
+    // before any async work.
+    let (project_names, has_projects) = {
+        let db = db.lock().map_err(|e| {
+            warp::reject::custom(DbLockError(e.to_string()))
+        })?;
+        let gh_sync = crate::github_sync::GitHubSync::new(&db);
+        let projects = match gh_sync.list_github_projects() {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(error_reply(
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &e.to_string(),
+                ))
+            }
+        };
+        let names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+        (names, !projects.is_empty())
+    }; // MutexGuard dropped here
 
-    let sync = SyncManager::new(&db);
-    let project_names: Vec<String> = match sync.list_registered_projects() {
-        Ok(projects) => projects.into_iter().map(|p| p.name).collect(),
-        Err(_) => Vec::new(),
+    if !has_projects {
+        return Ok(error_reply(
+            warp::http::StatusCode::BAD_REQUEST,
+            "No projects configured for GitHub sync (missing github_owner/github_repo)",
+        ));
+    }
+
+    // Create a real GitHub API client. If the gh CLI is not available,
+    // fall back to a dry run so the endpoint still reports something
+    // useful instead of silently succeeding.
+    let client = crate::github_sync::ReqwestClient::new(None);
+    let dry_run = client.is_err();
+
+    // Run the GitHub sync inside `spawn_blocking` because `PortfolioDb`
+    // (and thus `MutexGuard`) is not `Send` and cannot be held across an
+    // `.await` point.  We re-acquire the lock inside the blocking task and
+    // drive the async sync with `Handle::block_on`.
+    let db_for_blocking = db.clone();
+    let sync_result = tokio::task::spawn_blocking(move || -> anyhow::Result<crate::github_sync::GitHubSyncReport> {
+        let db = db_for_blocking
+            .lock()
+            .map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
+        let gh_sync = crate::github_sync::GitHubSync::new(&db);
+        let handle = tokio::runtime::Handle::current();
+        let client_ref: Option<&dyn crate::github_sync::GitHubClient> = match &client {
+            Ok(c) => Some(c),
+            Err(_) => None,
+        };
+        handle.block_on(gh_sync.sync(client_ref, dry_run))
+    })
+    .await;
+
+    let report = match sync_result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            return Ok(error_reply(
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &e.to_string(),
+            ))
+        }
+        Err(e) => {
+            return Ok(error_reply(
+                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Sync task failed: {}", e),
+            ))
+        }
     };
 
-    // Run sync synchronously (could be spawned as a task in production)
-    let _ = sync.sync_all();
+    let status = if dry_run { "dry_run" } else { "completed" };
+    let message = if dry_run {
+        format!(
+            "gh CLI not available — dry run only. \
+             {} project(s), {} error(s)",
+            report.projects.len(),
+            report.total_errors,
+        )
+    } else {
+        format!(
+            "GitHub sync complete: {} pushed, {} pulled, {} conflicts, {} errors",
+            report.total_pushed,
+            report.total_pulled,
+            report.total_conflicts,
+            report.total_errors,
+        )
+    };
 
     Ok(warp::reply::with_status(
         warp::reply::json(&SyncTriggerResponse {
-            status: "syncing".to_string(),
-            message: "GitHub sync started".to_string(),
+            status: status.to_string(),
+            message,
             projects: project_names,
         }),
-        warp::http::StatusCode::ACCEPTED,
+        warp::http::StatusCode::OK,
     )
     .into_response())
 }
@@ -2385,9 +2518,11 @@ mod tests {
             .path("/api/sync/github")
             .reply(&routes)
             .await;
-        assert_eq!(resp.status(), 202);
+        // No projects are configured for GitHub sync, so the endpoint
+        // returns 400 Bad Request.
+        assert_eq!(resp.status(), 400);
         let body: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
-        assert_eq!(body["status"], "syncing");
+        assert!(body["error"].as_str().unwrap().contains("No projects configured"));
     }
 
     #[tokio::test]

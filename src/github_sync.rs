@@ -534,7 +534,7 @@ impl<'a> GitHubSync<'a> {
     }
 
     /// List all registered projects that have GitHub owner and repo set.
-    fn list_github_projects(&self) -> Result<Vec<Project>> {
+    pub fn list_github_projects(&self) -> Result<Vec<Project>> {
         let projects = self.db.list_projects(None)?;
         Ok(projects
             .into_iter()
