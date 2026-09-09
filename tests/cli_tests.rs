@@ -1714,3 +1714,203 @@ fn test_project_register_non_git_repo() {
         .success()
         .stdout(predicate::str::contains("(none)").or(predicate::str::contains("Registered")));
 }
+
+// ---------------------------------------------------------------------------
+// App CRUD integration tests (story 03-001)
+// ---------------------------------------------------------------------------
+
+/// Helper: create a portfolio and register a project (which auto-creates a
+/// default app). Returns the temp dirs so they stay alive for the test.
+fn setup_project_with_default_app() -> (TempDir, std::path::PathBuf) {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project")
+        .arg("register")
+        .arg(repo_temp.path())
+        .arg("--portfolio")
+        .arg("personal")
+        .assert()
+        .success();
+
+    // Keep repo_temp alive by leaking it — the TempDir will be cleaned up when
+    // the process exits. This is acceptable for tests.
+    std::mem::forget(repo_temp);
+
+    (db_temp, db_path)
+}
+
+#[test]
+fn test_app_create() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app")
+        .arg("create")
+        .arg("api")
+        .arg("--project=1")
+        .arg("--description=REST API")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created app"));
+}
+
+#[test]
+fn test_app_create_duplicate_fails() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Create first app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .success();
+
+    // Create duplicate
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_app_list() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Create an additional app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1")
+        .assert()
+        .success();
+
+    // List should show both default and api
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"))
+        .stdout(predicate::str::contains("api"));
+}
+
+#[test]
+fn test_app_list_all_projects() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // List without --project should show all apps
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+}
+
+#[test]
+fn test_app_sunset() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    // Sunset the default app (id=1)
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("sunset").arg("1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sunset"));
+}
+
+#[test]
+fn test_app_sunset_not_found() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("sunset").arg("999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_app_create_invalid_state() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=1").arg("--state=invalid")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid state"));
+}
+
+#[test]
+fn test_app_create_with_valid_state() {
+    let (_temp_dir, db_path) = setup_project_with_default_app();
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("web").arg("--project=1").arg("--state=sketched")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created app"));
+
+    // Verify state is shown in list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sketched"));
+}
+
+#[test]
+fn test_app_create_nonexistent_project() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("create").arg("api").arg("--project=999")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_project_register_creates_default_app() {
+    let db_temp = TempDir::new().unwrap();
+    let db_path = db_temp.path().join("portfolio.db");
+    let repo_temp = create_temp_git_repo();
+
+    create_portfolio(&db_path, "personal", "Personal");
+
+    // Register a project — should auto-create a default app
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("project").arg("register").arg(repo_temp.path()).arg("--portfolio").arg("personal")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+
+    // Verify default app exists via app list
+    let mut cmd = Command::cargo_bin("tkr").unwrap();
+    cmd.env("TKR_DB_PATH", &db_path)
+        .arg("app").arg("list").arg("--project=1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"));
+
+    // Keep repo_temp alive
+    std::mem::forget(repo_temp);
+}
